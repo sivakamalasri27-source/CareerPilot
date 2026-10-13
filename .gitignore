@@ -1,0 +1,36 @@
+# Compiled files & build artifacts
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Environment & local configurations
+.env
+.env.local
+*.local
+
+# IDE & Editor files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Frontend (for Phase 9)
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+.npm/
+
+# OS specific
+Desktop.ini
+$RECYCLE.BIN/

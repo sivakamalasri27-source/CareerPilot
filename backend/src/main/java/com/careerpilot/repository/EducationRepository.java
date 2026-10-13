@@ -1,0 +1,15 @@
+package com.careerpilot.repository;
+
+import com.careerpilot.entity.Education;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+@Repository
+public interface EducationRepository extends JpaRepository<Education, Long> {
+
+    List<Education> findAllByProfileId(Long profileId);
+
+    List<Education> findAllByProfileIdOrderByStartDateDesc(Long profileId);
+}
