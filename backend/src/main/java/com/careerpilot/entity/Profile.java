@@ -26,6 +26,11 @@ public class Profile extends BaseAuditableEntity {
     @JoinColumn(name = "user_id", nullable = false, unique = true)
     private User user;
 
+    @Version
+    @Column(name = "version", nullable = false)
+    @Builder.Default
+    private Long version = 0L;
+
     @Column(name = "headline", length = 255)
     private String headline;
 
