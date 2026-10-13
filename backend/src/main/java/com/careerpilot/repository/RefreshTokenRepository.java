@@ -14,5 +14,9 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
 
     List<RefreshToken> findAllByUserIdAndRevokedFalse(Long userId);
 
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @org.springframework.data.jpa.repository.Query("UPDATE RefreshToken r SET r.revoked = true WHERE r.user.id = :userId AND r.revoked = false")
+    int revokeAllActiveTokensByUserId(@org.springframework.data.repository.query.Param("userId") Long userId);
+
     void deleteAllByUserId(Long userId);
 }
