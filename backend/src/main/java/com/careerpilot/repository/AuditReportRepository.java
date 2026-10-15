@@ -17,4 +17,6 @@ public interface AuditReportRepository extends JpaRepository<AuditReport, Long> 
     Page<AuditReport> findAllByProfileIdOrderByCreatedAtDesc(Long profileId, Pageable pageable);
 
     Optional<AuditReport> findTopByProfileIdOrderByCreatedAtDesc(Long profileId);
+
+    Optional<AuditReport> findByIdAndProfileId(Long id, Long profileId);
 }

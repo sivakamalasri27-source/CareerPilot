@@ -47,6 +47,10 @@ public class AuditReport {
     @Builder.Default
     private List<Map<String, Object>> weaknesses = new ArrayList<>();
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "recruiter_feedback", columnDefinition = "jsonb")
+    private Map<String, Object> recruiterFeedback;
+
     @Column(name = "request_type", nullable = false, length = 50)
     @Builder.Default
     private String requestType = "FULL_AUDIT";
