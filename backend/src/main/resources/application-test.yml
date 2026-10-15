@@ -15,6 +15,34 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+llm:
+  provider: fake
+  api-key: test-api-key
+  model: gemini-1.5-flash
+  timeout-seconds: 3
+  rate-limit:
+    capacity: 3
+    refill-tokens: 3
+    refill-duration-seconds: 60
+  cache:
+    ttl-minutes: 5
+    max-size: 100
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      llmService:
+        sliding-window-size: 4
+        minimum-number-of-calls: 2
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5000ms
+        permitted-number-of-calls-in-half-open-state: 1
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+
 logging:
   level:
     root: WARN

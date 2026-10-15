@@ -55,6 +55,10 @@ public class AiUsageLog {
     @Builder.Default
     private Long durationMs = 0L;
 
+    @Column(name = "is_success", nullable = false)
+    @Builder.Default
+    private Boolean isSuccess = true;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
