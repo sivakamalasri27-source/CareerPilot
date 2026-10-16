@@ -1,6 +1,7 @@
 package com.careerpilot.dto.profile;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -20,7 +21,8 @@ public class ProfileRequest {
     @Size(max = 2000, message = "About section cannot exceed 2000 characters")
     private String about;
 
-    @Size(max = 100, message = "GitHub username cannot exceed 100 characters")
+    @Pattern(regexp = "^$|^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$", message = "Invalid GitHub username format")
+    @Size(max = 39, message = "GitHub username cannot exceed 39 characters")
     private String githubUsername;
 
     @Size(max = 100, message = "Target role cannot exceed 100 characters")

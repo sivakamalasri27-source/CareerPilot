@@ -86,6 +86,20 @@ public class AgentController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/verify-skills")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Verify claimed skills against public GitHub repositories",
+            description = "Audits candidate skills against public GitHub repositories via deterministic Java matching and LLM-synthesized evidence summaries.")
+    public ResponseEntity<com.careerpilot.dto.agent.VerifySkillsResponse> verifySkills(
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        User user = resolveAuthenticatedUser(userDetails);
+        Profile profile = resolveUserProfile(user);
+
+        com.careerpilot.dto.agent.VerifySkillsResponse response = agentOrchestrator.executeSkillVerification(user, profile);
+        return ResponseEntity.ok(response);
+    }
+
     private User resolveAuthenticatedUser(UserDetails userDetails) {
         if (userDetails == null) {
             throw new ResourceNotFoundException("User not authenticated");

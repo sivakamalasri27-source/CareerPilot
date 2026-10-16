@@ -1,0 +1,17 @@
+package com.careerpilot.agent.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class RepoEvidence {
+
+    private String repoName;
+    private String repoUrl;
+    private String reason;
+}

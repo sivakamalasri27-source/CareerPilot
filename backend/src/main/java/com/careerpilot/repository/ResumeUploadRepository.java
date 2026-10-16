@@ -13,4 +13,6 @@ public interface ResumeUploadRepository extends JpaRepository<ResumeUpload, Long
     List<ResumeUpload> findAllByUserIdOrderByCreatedAtDesc(Long userId);
 
     Optional<ResumeUpload> findTopByUserIdOrderByCreatedAtDesc(Long userId);
+
+    Optional<ResumeUpload> findByIdAndUserId(Long id, Long userId);
 }

@@ -5,16 +5,21 @@ import com.careerpilot.agent.core.AgentContext;
 import com.careerpilot.agent.core.AgentResult;
 import com.careerpilot.agent.dto.*;
 import com.careerpilot.agent.recruiter.RecruiterSimulatorAgent;
+import com.careerpilot.agent.skill.ProofOfSkillAgent;
+import com.careerpilot.agent.skill.SkillEvidenceMatcher;
 import com.careerpilot.agent.translator.ExperienceTranslatorAgent;
 import com.careerpilot.agent.util.ProfileFormatter;
 import com.careerpilot.dto.agent.TranslateExperienceRequest;
 import com.careerpilot.dto.agent.TranslateExperienceResponse;
+import com.careerpilot.dto.agent.VerifySkillsResponse;
 import com.careerpilot.dto.suggestion.SuggestionResponse;
 import com.careerpilot.entity.*;
 import com.careerpilot.exception.ResourceNotFoundException;
 import com.careerpilot.repository.AuditReportRepository;
 import com.careerpilot.repository.ProjectRepository;
 import com.careerpilot.service.SuggestionService;
+import com.careerpilot.tool.github.GitHubRepoDto;
+import com.careerpilot.tool.github.GitHubTool;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -35,6 +40,9 @@ public class AgentOrchestrator {
     private final ProfileAuditorAgent profileAuditorAgent;
     private final RecruiterSimulatorAgent recruiterSimulatorAgent;
     private final ExperienceTranslatorAgent experienceTranslatorAgent;
+    private final ProofOfSkillAgent proofOfSkillAgent;
+    private final GitHubTool gitHubTool;
+    private final SkillEvidenceMatcher skillEvidenceMatcher;
     private final AuditReportRepository auditReportRepository;
     private final ProjectRepository projectRepository;
     private final SuggestionService suggestionService;
@@ -362,5 +370,78 @@ public class AgentOrchestrator {
                 );
             }
         }
+    }
+
+    /**
+     * Executes ProofOfSkillAgent (request type VERIFY_SKILLS).
+     * Fetches public GitHub repositories via GitHubTool, evaluates evidence deterministically in Java,
+     * and enriches explanations via ProofOfSkillAgent.
+     */
+    @Transactional(readOnly = true)
+    public VerifySkillsResponse executeSkillVerification(User user, Profile profile) {
+        log.info("Orchestrating VERIFY_SKILLS for profile ID: {}, github: {}",
+                profile != null ? profile.getId() : null,
+                profile != null ? profile.getGithubUsername() : null);
+
+        List<ProfileSkill> claimedSkills = (profile != null && profile.getProfileSkills() != null)
+                ? profile.getProfileSkills()
+                : Collections.emptyList();
+
+        String githubUsername = (profile != null) ? profile.getGithubUsername() : null;
+
+        List<GitHubRepoDto> repos = (githubUsername != null && !githubUsername.isBlank())
+                ? gitHubTool.fetchPublicRepositories(githubUsername)
+                : Collections.emptyList();
+
+        SkillVerificationResult precomputed = skillEvidenceMatcher.matchSkillsToRepositories(claimedSkills, repos);
+
+        if (githubUsername == null || githubUsername.isBlank()) {
+            precomputed.setSummary("No GitHub username configured on profile. Link your GitHub account to verify your skills against code evidence.");
+            return VerifySkillsResponse.builder()
+                    .githubUsername(null)
+                    .totalClaimedSkills(claimedSkills.size())
+                    .verifiedSkillsCount(0)
+                    .agentResult(AgentResult.success(precomputed))
+                    .build();
+        }
+
+        AgentContext<SkillVerificationResult> ctx = AgentContext.<SkillVerificationResult>builder()
+                .user(user)
+                .profile(profile)
+                .input(precomputed)
+                .targetRole(profile.getTargetRole())
+                .build();
+
+        CompletableFuture<AgentResult<SkillVerificationResult>> proofFuture = CompletableFuture.supplyAsync(
+                () -> proofOfSkillAgent.execute(ctx),
+                orchestratorExecutor
+        ).exceptionally(ex -> {
+            log.error("ProofOfSkillAgent threw unhandled exception: {}", ex.getMessage(), ex);
+            return AgentResult.fallback(precomputed, "Proof agent error; using deterministic matcher: " + ex.getMessage());
+        });
+
+        try {
+            proofFuture.get(ORCHESTRATOR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Skill verification future completed with exception or timeout: {}", e.getMessage());
+        }
+
+        AgentResult<SkillVerificationResult> agentResult = resolveFutureWithFallback(
+                proofFuture,
+                () -> AgentResult.fallback(precomputed, "Skill verification timed out; using deterministic matcher")
+        );
+
+        int verifiedCount = (agentResult.getData() != null && agentResult.getData().getSkills() != null)
+                ? (int) agentResult.getData().getSkills().stream()
+                .filter(s -> s.getStatus() == SkillVerificationStatus.VERIFIED)
+                .count()
+                : 0;
+
+        return VerifySkillsResponse.builder()
+                .githubUsername(githubUsername)
+                .totalClaimedSkills(claimedSkills.size())
+                .verifiedSkillsCount(verifiedCount)
+                .agentResult(agentResult)
+                .build();
     }
 }

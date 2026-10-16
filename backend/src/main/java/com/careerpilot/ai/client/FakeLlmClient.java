@@ -113,6 +113,67 @@ public class FakeLlmClient implements LlmClient {
             }
             """;
 
+    public static final String CANNED_PROOF_RESPONSE = """
+            {
+              "overallVerifiedPercentage": 100.0,
+              "skills": [
+                {
+                  "skillName": "java",
+                  "claimedLevel": "INTERMEDIATE",
+                  "status": "VERIFIED",
+                  "evidence": [
+                    {
+                      "repoName": "ecommerce-api",
+                      "repoUrl": "https://github.com/testuser/ecommerce-api",
+                      "reason": "Primary language: Java"
+                    }
+                  ],
+                  "explanation": "Verified through primary language Java implementation in repository ecommerce-api."
+                }
+              ],
+              "summary": "Verified 1 of 1 claimed skills against public GitHub activity."
+            }
+            """;
+
+    public static final String CANNED_RESUME_PARSER_RESPONSE = """
+            {
+              "headline": "Junior Software Engineer | Java & Spring Boot",
+              "about": "Aspiring software engineer with hands-on experience building distributed systems.",
+              "skills": [
+                {
+                  "name": "Java",
+                  "proficiency": "INTERMEDIATE"
+                },
+                {
+                  "name": "Docker",
+                  "proficiency": "BEGINNER"
+                }
+              ],
+              "projects": [
+                {
+                  "title": "Cloud Microservices Platform",
+                  "description": "Backend services built with Spring Boot and PostgreSQL",
+                  "technologies": "Java, Spring Boot, Docker, PostgreSQL",
+                  "role": "Backend Developer",
+                  "bullets": [
+                    "Engineered RESTful endpoints handling high concurrency",
+                    "Configured Docker container deployment"
+                  ]
+                }
+              ],
+              "education": [
+                {
+                  "institution": "State University",
+                  "degree": "Bachelor of Science",
+                  "fieldOfStudy": "Computer Science",
+                  "gradeOrGpa": "3.8/4.0",
+                  "startDate": "2021-09-01",
+                  "endDate": "2025-05-31"
+                }
+              ]
+            }
+            """;
+
     @Getter
     private final List<LlmRequest> recordedRequests = Collections.synchronizedList(new ArrayList<>());
     private final Queue<String> responseQueue = new LinkedList<>();
@@ -156,7 +217,7 @@ public class FakeLlmClient implements LlmClient {
         String content = null;
         String prompt = request.getPrompt();
 
-        // Check if targeted queue exists for Auditor, Recruiter, or Translator
+        // Check if targeted queue exists for Auditor, Recruiter, Translator, ProofOfSkill, or ResumeParser
         if (prompt != null) {
             if (prompt.contains("ProfileAuditorAgent") || prompt.contains("overallScore")) {
                 Queue<String> q = agentQueues.get("ProfileAuditorAgent");
@@ -170,6 +231,16 @@ public class FakeLlmClient implements LlmClient {
                 }
             } else if (prompt.contains("ExperienceTranslatorAgent") || prompt.contains("STAR / XYZ BULLET STRUCTURE") || prompt.contains("clarifyingQuestions")) {
                 Queue<String> q = agentQueues.get("ExperienceTranslatorAgent");
+                if (q != null && !q.isEmpty()) {
+                    content = q.poll();
+                }
+            } else if (prompt.contains("ProofOfSkillAgent") || prompt.contains("overallVerifiedPercentage") || prompt.contains("Skill evidence data computed")) {
+                Queue<String> q = agentQueues.get("ProofOfSkillAgent");
+                if (q != null && !q.isEmpty()) {
+                    content = q.poll();
+                }
+            } else if (prompt.contains("ResumeParserAgent") || prompt.contains("Resume text data:") || prompt.contains("SKILLS EXTRACTION")) {
+                Queue<String> q = agentQueues.get("ResumeParserAgent");
                 if (q != null && !q.isEmpty()) {
                     content = q.poll();
                 }
@@ -189,6 +260,10 @@ public class FakeLlmClient implements LlmClient {
                         content = CANNED_RECRUITER_RESPONSE;
                     } else if (prompt != null && (prompt.contains("ExperienceTranslatorAgent") || prompt.contains("STAR / XYZ BULLET STRUCTURE") || prompt.contains("clarifyingQuestions"))) {
                         content = CANNED_TRANSLATOR_RESPONSE;
+                    } else if (prompt != null && (prompt.contains("ProofOfSkillAgent") || prompt.contains("overallVerifiedPercentage") || prompt.contains("Skill evidence data computed"))) {
+                        content = CANNED_PROOF_RESPONSE;
+                    } else if (prompt != null && (prompt.contains("ResumeParserAgent") || prompt.contains("Resume text data:") || prompt.contains("SKILLS EXTRACTION"))) {
+                        content = CANNED_RESUME_PARSER_RESPONSE;
                     } else {
                         content = defaultResponse;
                     }
