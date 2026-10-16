@@ -100,6 +100,21 @@ public class AgentController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/skill-gap")
+    @Transactional
+    @Operation(summary = "Analyze skill gap against a target career role",
+            description = "Computes deterministic skill alignment against a curated target role and synthesizes a prioritized learning roadmap.")
+    public ResponseEntity<com.careerpilot.dto.skillgap.SkillGapResponse> analyzeSkillGap(
+            @jakarta.validation.Valid @RequestBody com.careerpilot.dto.skillgap.SkillGapRequest request,
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        User user = resolveAuthenticatedUser(userDetails);
+        Profile profile = resolveUserProfile(user);
+
+        com.careerpilot.dto.skillgap.SkillGapResponse response = agentOrchestrator.executeSkillGap(user, profile, request.getRoleId());
+        return ResponseEntity.ok(response);
+    }
+
     private User resolveAuthenticatedUser(UserDetails userDetails) {
         if (userDetails == null) {
             throw new ResourceNotFoundException("User not authenticated");

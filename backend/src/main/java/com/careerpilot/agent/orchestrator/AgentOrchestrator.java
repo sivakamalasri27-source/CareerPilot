@@ -1,22 +1,26 @@
 package com.careerpilot.agent.orchestrator;
 
 import com.careerpilot.agent.auditor.ProfileAuditorAgent;
+import com.careerpilot.agent.coach.WeeklyCoachAgent;
 import com.careerpilot.agent.core.AgentContext;
 import com.careerpilot.agent.core.AgentResult;
 import com.careerpilot.agent.dto.*;
 import com.careerpilot.agent.recruiter.RecruiterSimulatorAgent;
 import com.careerpilot.agent.skill.ProofOfSkillAgent;
 import com.careerpilot.agent.skill.SkillEvidenceMatcher;
+import com.careerpilot.agent.skillgap.SkillGapAgent;
+import com.careerpilot.agent.skillgap.SkillGapCalculator;
 import com.careerpilot.agent.translator.ExperienceTranslatorAgent;
 import com.careerpilot.agent.util.ProfileFormatter;
 import com.careerpilot.dto.agent.TranslateExperienceRequest;
 import com.careerpilot.dto.agent.TranslateExperienceResponse;
 import com.careerpilot.dto.agent.VerifySkillsResponse;
+import com.careerpilot.dto.skillgap.SkillGapComputationResult;
+import com.careerpilot.dto.skillgap.SkillGapResponse;
 import com.careerpilot.dto.suggestion.SuggestionResponse;
 import com.careerpilot.entity.*;
 import com.careerpilot.exception.ResourceNotFoundException;
-import com.careerpilot.repository.AuditReportRepository;
-import com.careerpilot.repository.ProjectRepository;
+import com.careerpilot.repository.*;
 import com.careerpilot.service.SuggestionService;
 import com.careerpilot.tool.github.GitHubRepoDto;
 import com.careerpilot.tool.github.GitHubTool;
@@ -41,8 +45,13 @@ public class AgentOrchestrator {
     private final RecruiterSimulatorAgent recruiterSimulatorAgent;
     private final ExperienceTranslatorAgent experienceTranslatorAgent;
     private final ProofOfSkillAgent proofOfSkillAgent;
+    private final SkillGapAgent skillGapAgent;
+    private final WeeklyCoachAgent weeklyCoachAgent;
     private final GitHubTool gitHubTool;
     private final SkillEvidenceMatcher skillEvidenceMatcher;
+    private final SkillGapCalculator skillGapCalculator;
+    private final TargetRoleRepository targetRoleRepository;
+    private final SkillGapReportRepository skillGapReportRepository;
     private final AuditReportRepository auditReportRepository;
     private final ProjectRepository projectRepository;
     private final SuggestionService suggestionService;
@@ -443,5 +452,212 @@ public class AgentOrchestrator {
                 .verifiedSkillsCount(verifiedCount)
                 .agentResult(agentResult)
                 .build();
+    }
+
+    /**
+     * Executes SkillGapAgent (request type SKILL_GAP).
+     * Computes the skill gap in plain Java first against curated TargetRole requirements,
+     * enriches it with an LLM-synthesized learning roadmap, and persists the result.
+     */
+    @Transactional
+    public SkillGapResponse executeSkillGap(User user, Profile profile, Long roleId) {
+        log.info("Orchestrating SKILL_GAP for profile ID: {}, roleId: {}",
+                profile != null ? profile.getId() : null, roleId);
+
+        TargetRole role = targetRoleRepository.findById(roleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Target role not found with id: " + roleId));
+
+        List<ProfileSkill> claimedSkills = (profile != null && profile.getProfileSkills() != null)
+                ? profile.getProfileSkills()
+                : Collections.emptyList();
+
+        Map<String, SkillVerificationStatus> verifiedStatusMap = new HashMap<>();
+        String githubUsername = (profile != null) ? profile.getGithubUsername() : null;
+        if (githubUsername != null && !githubUsername.isBlank()) {
+            List<GitHubRepoDto> repos = gitHubTool.fetchPublicRepositories(githubUsername);
+            SkillVerificationResult proof = skillEvidenceMatcher.matchSkillsToRepositories(claimedSkills, repos);
+            if (proof != null && proof.getSkills() != null) {
+                for (SkillEvidence se : proof.getSkills()) {
+                    if (se.getSkillName() != null) {
+                        verifiedStatusMap.put(SkillGapCalculator.normalize(se.getSkillName()), se.getStatus());
+                    }
+                }
+            }
+        }
+
+        SkillGapComputationResult computation = skillGapCalculator.calculateGap(role, claimedSkills, verifiedStatusMap);
+
+        AgentContext<SkillGapComputationResult> ctx = AgentContext.<SkillGapComputationResult>builder()
+                .user(user)
+                .profile(profile)
+                .input(computation)
+                .targetRole(role.getName())
+                .build();
+
+        CompletableFuture<AgentResult<SkillGapResult>> gapFuture = CompletableFuture.supplyAsync(
+                () -> skillGapAgent.execute(ctx),
+                orchestratorExecutor
+        ).exceptionally(ex -> {
+            log.error("SkillGapAgent threw unhandled exception: {}", ex.getMessage(), ex);
+            return AgentResult.failure("Skill gap evaluation failed: " + ex.getMessage());
+        });
+
+        try {
+            gapFuture.get(ORCHESTRATOR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Skill gap future completed with exception or timeout: {}", e.getMessage());
+        }
+
+        SkillGapResult fallback = buildDefaultSkillGapResult(computation);
+        AgentResult<SkillGapResult> agentResult = resolveFutureWithFallback(
+                gapFuture,
+                () -> AgentResult.fallback(fallback, "Skill gap evaluation timed out; using deterministic analysis")
+        );
+
+        SkillGapResult resultData = (agentResult.getData() != null) ? agentResult.getData() : fallback;
+
+        // Persist to skill_gap_reports
+        SkillGapReport report = persistSkillGapReport(profile, role, resultData);
+
+        return SkillGapResponse.builder()
+                .id(report.getId())
+                .roleId(role.getId())
+                .roleName(role.getName())
+                .matchPercentage(resultData.getMatchPercentage())
+                .matchedSkills(resultData.getMatchedSkills())
+                .missingSkills(resultData.getMissingSkills())
+                .weakSkills(resultData.getWeakSkills())
+                .learningRoadmap(resultData.getLearningRoadmap())
+                .summary(resultData.getSummary())
+                .createdAt(report.getCreatedAt())
+                .build();
+    }
+
+    private SkillGapResult buildDefaultSkillGapResult(SkillGapComputationResult computation) {
+        List<com.careerpilot.dto.skillgap.RoadmapItemDto> roadmap = new ArrayList<>();
+        if (computation.getMissingSkills() != null) {
+            for (com.careerpilot.dto.skillgap.MissingSkillDto missing : computation.getMissingSkills()) {
+                roadmap.add(com.careerpilot.dto.skillgap.RoadmapItemDto.builder()
+                        .skillName(missing.getSkillName())
+                        .priority(missing.getPriority())
+                        .whyItMatters("Core requirement for " + computation.getRoleName() + " engineering workflows.")
+                        .whatToLearn("Industry best practices, official tutorials, and core architectural patterns for " + missing.getSkillName() + ".")
+                        .smallProjectIdea("Create an open-source repository implementing " + missing.getSkillName() + " in an end-to-end service.")
+                        .build());
+            }
+        }
+
+        return SkillGapResult.builder()
+                .roleId(computation.getRoleId())
+                .roleName(computation.getRoleName())
+                .matchPercentage(computation.getMatchPercentage())
+                .matchedSkills(computation.getMatchedSkills())
+                .missingSkills(computation.getMissingSkills())
+                .weakSkills(computation.getWeakSkills())
+                .learningRoadmap(roadmap)
+                .summary("Analyzed " + computation.getRoleName() + " skill gap. Focus on missing core skills to increase alignment.")
+                .build();
+    }
+
+    private SkillGapReport persistSkillGapReport(Profile profile, TargetRole role, SkillGapResult resultData) {
+        List<Map<String, Object>> matched = (resultData.getMatchedSkills() != null)
+                ? resultData.getMatchedSkills().stream().map(com.careerpilot.dto.skillgap.MatchedSkillDto::toMap).toList()
+                : Collections.emptyList();
+
+        List<Map<String, Object>> missing = (resultData.getMissingSkills() != null)
+                ? resultData.getMissingSkills().stream().map(com.careerpilot.dto.skillgap.MissingSkillDto::toMap).toList()
+                : Collections.emptyList();
+
+        List<Map<String, Object>> weak = (resultData.getWeakSkills() != null)
+                ? resultData.getWeakSkills().stream().map(com.careerpilot.dto.skillgap.WeakSkillDto::toMap).toList()
+                : Collections.emptyList();
+
+        List<Map<String, Object>> roadmap = (resultData.getLearningRoadmap() != null)
+                ? resultData.getLearningRoadmap().stream().map(com.careerpilot.dto.skillgap.RoadmapItemDto::toMap).toList()
+                : Collections.emptyList();
+
+        SkillGapReport report = SkillGapReport.builder()
+                .profile(profile)
+                .targetRole(role)
+                .matchPercentage(resultData.getMatchPercentage())
+                .matchedSkills(matched)
+                .missingSkills(missing)
+                .weakSkills(weak)
+                .learningRoadmap(roadmap)
+                .summary(resultData.getSummary())
+                .build();
+
+        return skillGapReportRepository.save(report);
+    }
+
+    /**
+     * Executes WeeklyCoachAgent (request type WEEKLY_PLAN).
+     * Synthesizes latest audit weaknesses and skill gap missing skills into exactly 3 achievable weekly tasks.
+     */
+    @Transactional(readOnly = true)
+    public WeeklyCoachResult executeWeeklyPlan(User user, Profile profile) {
+        log.info("Orchestrating WEEKLY_PLAN for user ID: {}, profile ID: {}",
+                user != null ? user.getId() : null,
+                profile != null ? profile.getId() : null);
+
+        StringBuilder context = new StringBuilder();
+
+        if (profile != null) {
+            Optional<AuditReport> latestAudit = auditReportRepository.findTopByProfileIdOrderByCreatedAtDesc(profile.getId());
+            latestAudit.ifPresent(audit -> {
+                context.append("Latest Profile Audit (Score: ").append(audit.getOverallScore()).append("/100):\n");
+                if (audit.getWeaknesses() != null && !audit.getWeaknesses().isEmpty()) {
+                    context.append("Identified Weaknesses:\n");
+                    for (Map<String, Object> w : audit.getWeaknesses()) {
+                        context.append("- ").append(w.get("weakText")).append(" (Reason: ").append(w.get("reason")).append(")\n");
+                    }
+                }
+            });
+
+            Optional<SkillGapReport> latestGap = skillGapReportRepository.findTopByProfileIdOrderByCreatedAtDesc(profile.getId());
+            latestGap.ifPresent(gap -> {
+                context.append("\nLatest Skill Gap (Target Role: ").append(gap.getTargetRole().getName())
+                        .append(", Match: ").append(gap.getMatchPercentage()).append("%):\n");
+                if (gap.getMissingSkills() != null && !gap.getMissingSkills().isEmpty()) {
+                    context.append("Missing Skills to Learn: ");
+                    for (Map<String, Object> m : gap.getMissingSkills()) {
+                        context.append(m.get("skillName")).append(", ");
+                    }
+                    context.append("\n");
+                }
+            });
+        }
+
+        String contextStr = context.length() > 0
+                ? context.toString().trim()
+                : "No past audit report or skill gap analysis available. Candidate is seeking foundational fresher improvement steps.";
+
+        AgentContext<String> ctx = AgentContext.<String>builder()
+                .user(user)
+                .profile(profile)
+                .input(contextStr)
+                .targetRole(profile != null && profile.getTargetRole() != null ? profile.getTargetRole() : "Junior Software Engineer")
+                .build();
+
+        CompletableFuture<AgentResult<WeeklyCoachResult>> coachFuture = CompletableFuture.supplyAsync(
+                () -> weeklyCoachAgent.execute(ctx),
+                orchestratorExecutor
+        ).exceptionally(ex -> {
+            log.error("WeeklyCoachAgent threw unhandled exception: {}", ex.getMessage(), ex);
+            return AgentResult.failure("Weekly coach agent error: " + ex.getMessage());
+        });
+
+        try {
+            coachFuture.get(ORCHESTRATOR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Weekly plan future completed with exception or timeout: {}", e.getMessage());
+        }
+
+        AgentResult<WeeklyCoachResult> result = resolveFutureWithFallback(
+                coachFuture,
+                () -> weeklyCoachAgent.execute(ctx)
+        );
+
+        return result.getData();
     }
 }

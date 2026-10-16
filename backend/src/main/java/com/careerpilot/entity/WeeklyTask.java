@@ -14,7 +14,7 @@ import java.time.LocalDate;
 @AllArgsConstructor
 @Builder
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
-@ToString(exclude = "profile")
+@ToString(exclude = {"user", "profile"})
 public class WeeklyTask extends BaseAuditableEntity {
 
     @Id
@@ -22,9 +22,16 @@ public class WeeklyTask extends BaseAuditableEntity {
     @EqualsAndHashCode.Include
     private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "profile_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "profile_id")
     private Profile profile;
+
+    @Column(name = "week_start", nullable = false)
+    private LocalDate weekStart;
 
     @Column(name = "title", nullable = false, length = 255)
     private String title;
@@ -35,9 +42,10 @@ public class WeeklyTask extends BaseAuditableEntity {
     @Column(name = "category", length = 100)
     private String category;
 
-    @Column(name = "is_completed", nullable = false)
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
-    private Boolean isCompleted = false;
+    private TaskStatus status = TaskStatus.PENDING;
 
     @Column(name = "completed_at")
     private Instant completedAt;

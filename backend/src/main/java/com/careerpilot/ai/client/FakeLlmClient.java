@@ -174,6 +174,71 @@ public class FakeLlmClient implements LlmClient {
             }
             """;
 
+    public static final String CANNED_SKILL_GAP_RESPONSE = """
+            {
+              "roleId": 1,
+              "roleName": "Java Backend Developer",
+              "matchPercentage": 75.0,
+              "matchedSkills": [
+                {
+                  "skillName": "java",
+                  "claimedLevel": "INTERMEDIATE",
+                  "verificationStatus": "VERIFIED",
+                  "weight": 3
+                },
+                {
+                  "skillName": "spring boot",
+                  "claimedLevel": "INTERMEDIATE",
+                  "verificationStatus": "VERIFIED",
+                  "weight": 3
+                }
+              ],
+              "missingSkills": [
+                {
+                  "skillName": "docker",
+                  "category": "DevOps",
+                  "priority": "IMPORTANT",
+                  "weight": 2
+                }
+              ],
+              "weakSkills": [],
+              "learningRoadmap": [
+                {
+                  "skillName": "docker",
+                  "priority": "IMPORTANT",
+                  "whyItMatters": "Containerization is required for scalable microservice deployments in cloud platforms.",
+                  "whatToLearn": "Dockerfile syntax, multi-stage builds, and docker-compose orchestration.",
+                  "smallProjectIdea": "Containerize a Spring Boot service with PostgreSQL and run via docker-compose up."
+                }
+              ],
+              "summary": "Solid 75% alignment with Java Backend Developer. Master Docker containerization to complete your foundational backend stack."
+            }
+            """;
+
+    public static final String CANNED_WEEKLY_COACH_RESPONSE = """
+            {
+              "tasks": [
+                {
+                  "title": "Containerize Spring Boot Service with Dockerfile",
+                  "description": "Write a multi-stage Dockerfile packaging your Spring Boot application into an image under 200MB.",
+                  "category": "PROJECT_IMPROVEMENT"
+                },
+                {
+                  "title": "Add README with Architecture Diagram and Run Steps",
+                  "description": "Create a clear README.md with setup prerequisites, environment variables, and Docker Compose instructions.",
+                  "category": "PROFILE_OPTIMIZATION"
+                },
+                {
+                  "title": "Implement Unit Tests Achieving 80% Coverage",
+                  "description": "Write JUnit 5 test classes for repository and controller edge cases using Mockito.",
+                  "category": "SKILL_BUILDING"
+                }
+              ],
+              "focusArea": "Containerization & Verification",
+              "rationale": "Targeting the top skill gap (Docker) and addressing audit weakness regarding test coverage."
+            }
+            """;
+
     @Getter
     private final List<LlmRequest> recordedRequests = Collections.synchronizedList(new ArrayList<>());
     private final Queue<String> responseQueue = new LinkedList<>();
@@ -217,7 +282,7 @@ public class FakeLlmClient implements LlmClient {
         String content = null;
         String prompt = request.getPrompt();
 
-        // Check if targeted queue exists for Auditor, Recruiter, Translator, ProofOfSkill, or ResumeParser
+        // Check if targeted queue exists for Auditor, Recruiter, Translator, ProofOfSkill, ResumeParser, SkillGap, or WeeklyCoach
         if (prompt != null) {
             if (prompt.contains("ProfileAuditorAgent") || prompt.contains("overallScore")) {
                 Queue<String> q = agentQueues.get("ProfileAuditorAgent");
@@ -244,6 +309,16 @@ public class FakeLlmClient implements LlmClient {
                 if (q != null && !q.isEmpty()) {
                     content = q.poll();
                 }
+            } else if (prompt.contains("SkillGapAgent") || prompt.contains("learningRoadmap") || prompt.contains("Skill gap computation data:")) {
+                Queue<String> q = agentQueues.get("SkillGapAgent");
+                if (q != null && !q.isEmpty()) {
+                    content = q.poll();
+                }
+            } else if (prompt.contains("WeeklyCoachAgent") || prompt.contains("EXACTLY THREE CONCRETE TASKS") || prompt.contains("WeeklyCoachAgent for CareerPilot")) {
+                Queue<String> q = agentQueues.get("WeeklyCoachAgent");
+                if (q != null && !q.isEmpty()) {
+                    content = q.poll();
+                }
             }
         }
 
@@ -264,6 +339,10 @@ public class FakeLlmClient implements LlmClient {
                         content = CANNED_PROOF_RESPONSE;
                     } else if (prompt != null && (prompt.contains("ResumeParserAgent") || prompt.contains("Resume text data:") || prompt.contains("SKILLS EXTRACTION"))) {
                         content = CANNED_RESUME_PARSER_RESPONSE;
+                    } else if (prompt != null && (prompt.contains("SkillGapAgent") || prompt.contains("learningRoadmap") || prompt.contains("Skill gap computation data:"))) {
+                        content = CANNED_SKILL_GAP_RESPONSE;
+                    } else if (prompt != null && (prompt.contains("WeeklyCoachAgent") || prompt.contains("EXACTLY THREE CONCRETE TASKS") || prompt.contains("WeeklyCoachAgent for CareerPilot"))) {
+                        content = CANNED_WEEKLY_COACH_RESPONSE;
                     } else {
                         content = defaultResponse;
                     }
