@@ -7,7 +7,9 @@ import com.careerpilot.agent.core.AgentStatus;
 import com.careerpilot.agent.dto.ProfileAuditResult;
 import com.careerpilot.agent.dto.RecruiterDecision;
 import com.careerpilot.agent.dto.RecruiterSimulationResult;
+import com.careerpilot.agent.dto.ExperienceTranslationResult;
 import com.careerpilot.agent.recruiter.RecruiterSimulatorAgent;
+import com.careerpilot.agent.translator.ExperienceTranslatorAgent;
 import com.careerpilot.agent.util.ProfileFormatter;
 import com.careerpilot.ai.client.FakeLlmClient;
 import com.careerpilot.entity.*;
@@ -32,6 +34,9 @@ class AgentUnitTest {
 
     @Autowired
     private RecruiterSimulatorAgent recruiterSimulatorAgent;
+
+    @Autowired
+    private ExperienceTranslatorAgent experienceTranslatorAgent;
 
     @Autowired
     private FakeLlmClient fakeLlmClient;
@@ -177,5 +182,51 @@ class AgentUnitTest {
         assertThat(result.getData()).isNotNull();
         assertThat(result.getData().getConsensusDecision()).isEqualTo(RecruiterDecision.MAYBE);
         assertThat(result.getData().getPersonas()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("ExperienceTranslatorAgent: Generates industry bullets and clarifying questions")
+    void testExperienceTranslatorAgentValidOutput() {
+        AgentContext<String> ctx = AgentContext.<String>builder()
+                .user(sampleUser)
+                .profile(sampleProfile)
+                .input("E-Commerce Microservices. Designed backend REST API with Spring Boot and PostgreSQL.")
+                .targetRole("Backend Engineer")
+                .build();
+
+        AgentResult<ExperienceTranslationResult> result = experienceTranslatorAgent.execute(ctx);
+
+        assertThat(result.getStatus()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.getData()).isNotNull();
+
+        ExperienceTranslationResult translation = result.getData();
+        assertThat(translation.getBullets()).isNotEmpty();
+        assertThat(translation.getBullets().size()).isLessThanOrEqualTo(8);
+        for (String bullet : translation.getBullets()) {
+            assertThat(bullet.length()).isLessThanOrEqualTo(300);
+        }
+        assertThat(translation.getClarifyingQuestions()).isNotEmpty();
+        assertThat(translation.getRationale()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("ExperienceTranslatorAgent: Falls back gracefully on malformed LLM JSON")
+    void testExperienceTranslatorAgentFallbackOnMalformedJson() {
+        fakeLlmClient.setDefaultResponse("{ invalid translator json missing braces");
+
+        AgentContext<String> ctx = AgentContext.<String>builder()
+                .user(sampleUser)
+                .profile(sampleProfile)
+                .input("Coursework project in operating systems.")
+                .targetRole("Backend Engineer")
+                .build();
+
+        AgentResult<ExperienceTranslationResult> result = experienceTranslatorAgent.execute(ctx);
+
+        assertThat(result.getStatus()).isEqualTo(AgentStatus.FALLBACK);
+        assertThat(result.getData()).isNotNull();
+        assertThat(result.getData().getBullets()).isNotEmpty();
+        assertThat(result.getData().getClarifyingQuestions()).isNotEmpty();
+        assertThat(result.getErrorMessage()).containsIgnoringCase("fallback");
     }
 }

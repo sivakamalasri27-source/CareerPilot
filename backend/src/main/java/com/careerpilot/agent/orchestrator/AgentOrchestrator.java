@@ -5,11 +5,16 @@ import com.careerpilot.agent.core.AgentContext;
 import com.careerpilot.agent.core.AgentResult;
 import com.careerpilot.agent.dto.*;
 import com.careerpilot.agent.recruiter.RecruiterSimulatorAgent;
+import com.careerpilot.agent.translator.ExperienceTranslatorAgent;
 import com.careerpilot.agent.util.ProfileFormatter;
-import com.careerpilot.entity.AuditReport;
-import com.careerpilot.entity.Profile;
-import com.careerpilot.entity.User;
+import com.careerpilot.dto.agent.TranslateExperienceRequest;
+import com.careerpilot.dto.agent.TranslateExperienceResponse;
+import com.careerpilot.dto.suggestion.SuggestionResponse;
+import com.careerpilot.entity.*;
+import com.careerpilot.exception.ResourceNotFoundException;
 import com.careerpilot.repository.AuditReportRepository;
+import com.careerpilot.repository.ProjectRepository;
+import com.careerpilot.service.SuggestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -29,7 +34,10 @@ public class AgentOrchestrator {
 
     private final ProfileAuditorAgent profileAuditorAgent;
     private final RecruiterSimulatorAgent recruiterSimulatorAgent;
+    private final ExperienceTranslatorAgent experienceTranslatorAgent;
     private final AuditReportRepository auditReportRepository;
+    private final ProjectRepository projectRepository;
+    private final SuggestionService suggestionService;
 
     @Qualifier("orchestratorExecutor")
     private final Executor orchestratorExecutor;
@@ -98,6 +106,9 @@ public class AgentOrchestrator {
 
         // 6. Persist audit results to database
         AuditReport report = persistAuditReport(profile, auditorResult, recruiterResult, RequestType.FULL_AUDIT);
+
+        // 7. Optionally create suggestions from auditor weaknesses for headline and about
+        createSuggestionsFromWeaknesses(profile, auditorResult);
 
         return FullAuditResponse.builder()
                 .reportId(report.getId())
@@ -208,5 +219,148 @@ public class AgentOrchestrator {
                 .build();
 
         return auditReportRepository.save(report);
+    }
+
+    /**
+     * Executes ExperienceTranslatorAgent (request type REWRITE) for a project or coursework entry.
+     * Saves the result as a PENDING suggestion in agent_suggestions.
+     */
+    @Transactional
+    public TranslateExperienceResponse executeExperienceTranslation(
+            User user,
+            Profile profile,
+            TranslateExperienceRequest request
+    ) {
+        log.info("Orchestrating REWRITE (translate-experience) for profile ID: {}",
+                profile != null ? profile.getId() : null);
+
+        Long projectId = request != null ? request.getProjectId() : null;
+        StringBuilder experienceContent = new StringBuilder();
+        String originalText = "[]";
+
+        if (projectId != null) {
+            Project project = projectRepository.findByIdAndProfileId(projectId, profile.getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Project not found with id: " + projectId));
+
+            experienceContent.append("PROJECT TITLE: ").append(project.getTitle() != null ? project.getTitle() : "Untitled").append("\n");
+            if (project.getRole() != null) experienceContent.append("ROLE: ").append(project.getRole()).append("\n");
+            if (project.getDescription() != null) experienceContent.append("DESCRIPTION: ").append(project.getDescription()).append("\n");
+            if (project.getTechnologies() != null) experienceContent.append("TECHNOLOGIES: ").append(project.getTechnologies()).append("\n");
+            if (project.getBullets() != null && !project.getBullets().isEmpty()) {
+                experienceContent.append("CURRENT BULLETS:\n");
+                for (String b : project.getBullets()) {
+                    experienceContent.append("- ").append(b).append("\n");
+                }
+                originalText = suggestionService.serializeBullets(project.getBullets());
+            }
+        } else if (request != null) {
+            if (request.getTitle() != null) experienceContent.append("PROJECT / COURSEWORK TITLE: ").append(request.getTitle()).append("\n");
+            if (request.getRole() != null) experienceContent.append("ROLE: ").append(request.getRole()).append("\n");
+            if (request.getDescription() != null) experienceContent.append("DESCRIPTION: ").append(request.getDescription()).append("\n");
+            if (request.getTechnologies() != null) experienceContent.append("TECHNOLOGIES: ").append(request.getTechnologies()).append("\n");
+            if (request.getBullets() != null && !request.getBullets().isEmpty()) {
+                experienceContent.append("CURRENT BULLETS:\n");
+                for (String b : request.getBullets()) {
+                    experienceContent.append("- ").append(b).append("\n");
+                }
+                originalText = suggestionService.serializeBullets(request.getBullets());
+            }
+        }
+
+        String formattedExperience = experienceContent.toString().trim();
+        if (formattedExperience.isBlank()) {
+            throw new IllegalArgumentException("Cannot translate empty experience. Please provide a project ID or project details.");
+        }
+
+        String targetRole = (request != null && request.getTargetRole() != null && !request.getTargetRole().isBlank())
+                ? request.getTargetRole()
+                : (profile != null ? profile.getTargetRole() : "Software Engineer");
+
+        AgentContext<String> ctx = AgentContext.<String>builder()
+                .user(user)
+                .profile(profile)
+                .input(formattedExperience)
+                .targetRole(targetRole)
+                .build();
+
+        CompletableFuture<AgentResult<ExperienceTranslationResult>> translatorFuture = CompletableFuture.supplyAsync(
+                () -> experienceTranslatorAgent.execute(ctx),
+                orchestratorExecutor
+        ).exceptionally(ex -> {
+            log.error("ExperienceTranslatorAgent threw unhandled exception: {}", ex.getMessage(), ex);
+            return AgentResult.failure("Translator failed unexpectedly: " + ex.getMessage());
+        });
+
+        try {
+            translatorFuture.get(ORCHESTRATOR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Experience translation future completed with exception or timeout: {}", e.getMessage());
+        }
+
+        AgentResult<ExperienceTranslationResult> agentResult = resolveFutureWithFallback(
+                translatorFuture,
+                () -> AgentResult.failure("Experience translation timed out or failed")
+        );
+
+        SuggestionResponse suggestionResponse = null;
+        if (agentResult.getData() != null && agentResult.getData().getBullets() != null && !agentResult.getData().getBullets().isEmpty()) {
+            String suggestedText = suggestionService.serializeBullets(agentResult.getData().getBullets());
+            AgentSuggestion suggestion = suggestionService.createSuggestion(
+                    profile,
+                    ExperienceTranslatorAgent.AGENT_NAME,
+                    "PROJECT_BULLETS",
+                    projectId,
+                    originalText,
+                    suggestedText,
+                    agentResult.getData().getRationale()
+            );
+            suggestionResponse = suggestionService.mapToResponse(suggestion);
+        }
+
+        return TranslateExperienceResponse.builder()
+                .agentResult(agentResult)
+                .suggestion(suggestionResponse)
+                .build();
+    }
+
+    private void createSuggestionsFromWeaknesses(Profile profile, AgentResult<ProfileAuditResult> auditorResult) {
+        if (profile == null || auditorResult == null || auditorResult.getData() == null) {
+            return;
+        }
+        List<ProfileWeakness> weaknesses = auditorResult.getData().getWeaknesses();
+        if (weaknesses == null || weaknesses.isEmpty()) {
+            return;
+        }
+
+        for (ProfileWeakness weakness : weaknesses) {
+            String section = weakness.getSection();
+            if ("HEADLINE".equalsIgnoreCase(section) && profile.getHeadline() != null && !profile.getHeadline().isBlank()) {
+                String suggested = (weakness.getImprovementSuggestion() != null && !weakness.getImprovementSuggestion().isBlank())
+                        ? weakness.getImprovementSuggestion()
+                        : profile.getHeadline();
+                suggestionService.createSuggestion(
+                        profile,
+                        ProfileAuditorAgent.AGENT_NAME,
+                        "HEADLINE",
+                        null,
+                        profile.getHeadline(),
+                        suggested,
+                        weakness.getReason()
+                );
+            } else if ("ABOUT".equalsIgnoreCase(section) && profile.getAbout() != null && !profile.getAbout().isBlank()) {
+                String suggested = (weakness.getImprovementSuggestion() != null && !weakness.getImprovementSuggestion().isBlank())
+                        ? weakness.getImprovementSuggestion()
+                        : profile.getAbout();
+                suggestionService.createSuggestion(
+                        profile,
+                        ProfileAuditorAgent.AGENT_NAME,
+                        "ABOUT",
+                        null,
+                        profile.getAbout(),
+                        suggested,
+                        weakness.getReason()
+                );
+            }
+        }
     }
 }

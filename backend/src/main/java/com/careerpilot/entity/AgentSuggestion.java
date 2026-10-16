@@ -34,8 +34,14 @@ public class AgentSuggestion {
     @Column(name = "target_section", nullable = false, length = 100)
     private String targetSection;
 
+    @Column(name = "target_id")
+    private Long targetId;
+
     @Column(name = "original_text", columnDefinition = "TEXT")
     private String originalText;
+
+    @Column(name = "original_text_hash", length = 64)
+    private String originalTextHash;
 
     @Column(name = "suggested_text", nullable = false, columnDefinition = "TEXT")
     private String suggestedText;

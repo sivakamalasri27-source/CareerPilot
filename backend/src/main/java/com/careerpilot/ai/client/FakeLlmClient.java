@@ -98,6 +98,21 @@ public class FakeLlmClient implements LlmClient {
             }
             """;
 
+    public static final String CANNED_TRANSLATOR_RESPONSE = """
+            {
+              "bullets": [
+                "Architected distributed microservices backend with Spring Boot and PostgreSQL, achieving sub-50ms API response latency",
+                "Engineered robust JWT authentication filter with SHA-256 refresh token rotation and real-time reuse detection",
+                "Implemented automated CI/CD pipeline using Docker and GitHub Actions, automating regression testing"
+              ],
+              "clarifyingQuestions": [
+                "What was the estimated user traffic or throughput handled by the service?",
+                "Did you measure automated unit and integration test coverage percentage?"
+              ],
+              "rationale": "Transformed basic task descriptions into STAR achievement bullets with quantifiable outcomes and precise technical architecture."
+            }
+            """;
+
     @Getter
     private final List<LlmRequest> recordedRequests = Collections.synchronizedList(new ArrayList<>());
     private final Queue<String> responseQueue = new LinkedList<>();
@@ -141,7 +156,7 @@ public class FakeLlmClient implements LlmClient {
         String content = null;
         String prompt = request.getPrompt();
 
-        // Check if targeted queue exists for Auditor or Recruiter
+        // Check if targeted queue exists for Auditor, Recruiter, or Translator
         if (prompt != null) {
             if (prompt.contains("ProfileAuditorAgent") || prompt.contains("overallScore")) {
                 Queue<String> q = agentQueues.get("ProfileAuditorAgent");
@@ -150,6 +165,11 @@ public class FakeLlmClient implements LlmClient {
                 }
             } else if (prompt.contains("RecruiterSimulatorAgent") || prompt.contains("MNC_HR") || prompt.contains("hiring committee")) {
                 Queue<String> q = agentQueues.get("RecruiterSimulatorAgent");
+                if (q != null && !q.isEmpty()) {
+                    content = q.poll();
+                }
+            } else if (prompt.contains("ExperienceTranslatorAgent") || prompt.contains("STAR / XYZ BULLET STRUCTURE") || prompt.contains("clarifyingQuestions")) {
+                Queue<String> q = agentQueues.get("ExperienceTranslatorAgent");
                 if (q != null && !q.isEmpty()) {
                     content = q.poll();
                 }
@@ -167,6 +187,8 @@ public class FakeLlmClient implements LlmClient {
                         content = CANNED_AUDITOR_RESPONSE;
                     } else if (prompt != null && (prompt.contains("RecruiterSimulatorAgent") || prompt.contains("MNC_HR") || prompt.contains("hiring committee"))) {
                         content = CANNED_RECRUITER_RESPONSE;
+                    } else if (prompt != null && (prompt.contains("ExperienceTranslatorAgent") || prompt.contains("STAR / XYZ BULLET STRUCTURE") || prompt.contains("clarifyingQuestions"))) {
+                        content = CANNED_TRANSLATOR_RESPONSE;
                     } else {
                         content = defaultResponse;
                     }
