@@ -42,6 +42,30 @@ public class WeeklyTask extends BaseAuditableEntity {
     @Column(name = "category", length = 100)
     private String category;
 
+    @Column(name = "estimated_time", length = 50)
+    private String estimatedTime;
+
+    @Column(name = "why_this_matters", columnDefinition = "TEXT")
+    private String whyThisMatters;
+
+    @Column(name = "verification_type", length = 50)
+    @Builder.Default
+    private String verificationType = "SELF_REPORTED";
+
+    @Column(name = "verification_hint", length = 255)
+    private String verificationHint;
+
+    @Column(name = "verification_status", length = 50)
+    @Builder.Default
+    private String verificationStatus = "UNVERIFIED";
+
+    @Column(name = "proof_url", length = 500)
+    private String proofUrl;
+
+    @Column(name = "baseline_count")
+    @Builder.Default
+    private Integer baselineCount = 0;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default

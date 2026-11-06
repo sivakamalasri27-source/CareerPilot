@@ -22,6 +22,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -51,7 +53,8 @@ public class AgentController {
         Profile profile = resolveUserProfile(user);
 
         String targetRole = request != null ? request.getTargetRole() : null;
-        FullAuditResponse response = agentOrchestrator.executeFullAudit(user, profile, targetRole);
+        boolean force = request != null && Boolean.TRUE.equals(request.getForce());
+        FullAuditResponse response = agentOrchestrator.executeFullAudit(user, profile, targetRole, force);
         return ResponseEntity.ok(response);
     }
 
@@ -113,6 +116,44 @@ public class AgentController {
 
         com.careerpilot.dto.skillgap.SkillGapResponse response = agentOrchestrator.executeSkillGap(user, profile, request.getRoleId());
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/job-match")
+    @Transactional
+    @Operation(summary = "Match profile against a job description",
+            description = "Extracts required skills and experience deterministically from a job description, evaluates candidate profile and verification status, and synthesizes 3 targeted profile tweaks and interview topics.")
+    public ResponseEntity<com.careerpilot.dto.jobmatch.JobMatchResponse> matchJob(
+            @jakarta.validation.Valid @RequestBody com.careerpilot.dto.jobmatch.JobMatchRequest request,
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        User user = resolveAuthenticatedUser(userDetails);
+        Profile profile = resolveUserProfile(user);
+
+        com.careerpilot.dto.jobmatch.JobMatchResponse response = agentOrchestrator.executeJobMatch(user, profile, request);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/job-match")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get user job match history",
+            description = "Retrieves previously generated job match reports for the authenticated candidate.")
+    public ResponseEntity<java.util.List<com.careerpilot.dto.jobmatch.JobMatchResponse>> getJobMatchHistory(
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        User user = resolveAuthenticatedUser(userDetails);
+        return ResponseEntity.ok(agentOrchestrator.getJobMatchHistory(user));
+    }
+
+    @GetMapping("/job-match/{id}")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get specific job match report",
+            description = "Retrieves a specific job match report by ID, verifying candidate ownership.")
+    public ResponseEntity<com.careerpilot.dto.jobmatch.JobMatchResponse> getJobMatchReport(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        User user = resolveAuthenticatedUser(userDetails);
+        return ResponseEntity.ok(agentOrchestrator.getJobMatchById(user, id));
     }
 
     private User resolveAuthenticatedUser(UserDetails userDetails) {

@@ -22,7 +22,7 @@ import java.util.Map;
 public class ProfileAuditorAgent implements Agent<String, ProfileAuditResult> {
 
     public static final String AGENT_NAME = "ProfileAuditorAgent";
-    private static final String PROMPT_FILE = "auditor.v1.txt";
+    private static final String PROMPT_FILE = "auditor.v2.txt";
 
     private final AiExecutionService aiExecutionService;
 

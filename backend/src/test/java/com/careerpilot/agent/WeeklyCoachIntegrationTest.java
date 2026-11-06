@@ -98,6 +98,8 @@ class WeeklyCoachIntegrationTest {
                 .andExpect(jsonPath("$.tasks", hasSize(3)))
                 .andExpect(jsonPath("$.newPlan").value(true))
                 .andExpect(jsonPath("$.tasks[0].status").value("PENDING"))
+                .andExpect(jsonPath("$.tasks[0].estimatedTime").isNotEmpty())
+                .andExpect(jsonPath("$.tasks[0].whyThisMatters").isNotEmpty())
                 .andReturn();
 
         WeeklyPlanResponse firstPlan = objectMapper.readValue(firstResult.getResponse().getContentAsString(), WeeklyPlanResponse.class);

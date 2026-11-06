@@ -19,4 +19,16 @@ public class FullAuditResponse {
     private AgentResult<ProfileAuditResult> auditorResult;
     private AgentResult<RecruiterSimulationResult> recruiterResult;
     private Instant createdAt;
+    private boolean unchanged;
+
+    public Integer getOverallScore() {
+        if (auditorResult != null && auditorResult.getData() != null) {
+            return auditorResult.getData().getOverallScore();
+        }
+        return null;
+    }
+
+    public Long getAuditId() {
+        return reportId;
+    }
 }

@@ -13,4 +13,8 @@ public class CoachTaskDto {
     private String title;
     private String description;
     private String category;
+    private String estimatedTime;
+    private String whyThisMatters;
+    private String verificationType;
+    private String verificationHint;
 }

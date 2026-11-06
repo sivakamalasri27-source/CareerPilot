@@ -18,6 +18,12 @@ public class WeeklyTaskResponse {
     private String title;
     private String description;
     private String category;
+    private String estimatedTime;
+    private String whyThisMatters;
+    private String verificationType;
+    private String verificationHint;
+    private String verificationStatus;
+    private String proofUrl;
     private TaskStatus status;
     private LocalDate weekStart;
     private Instant completedAt;

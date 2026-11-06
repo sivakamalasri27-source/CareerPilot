@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -37,7 +38,7 @@ public class SecurityConfig {
     private final JwtAuthenticationEntryPoint jwtAuthEntryPoint;
     private final CustomUserDetailsService userDetailsService;
 
-    @Value("${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}")
+    @Value("${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}")
     private String allowedOrigins;
 
     private static final String[] PUBLIC_URLS = {
@@ -60,6 +61,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(jwtAuthEntryPoint))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(PUBLIC_URLS).permitAll()
                         .anyRequest().authenticated()
                 )
@@ -90,11 +92,14 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        List<String> origins = Arrays.asList(allowedOrigins.split(","));
+        List<String> origins = Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
         configuration.setAllowedOrigins(origins);
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Trace-Id", "Accept"));
-        configuration.setExposedHeaders(List.of("X-Trace-Id"));
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"));
+        configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Trace-Id", "Accept", "Origin", "X-Requested-With", "*"));
+        configuration.setExposedHeaders(List.of("X-Trace-Id", "Retry-After"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 

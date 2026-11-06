@@ -55,6 +55,9 @@ public class AuditReport {
     @Builder.Default
     private String requestType = "FULL_AUDIT";
 
+    @Column(name = "profile_content_hash", length = 64)
+    private String profileContentHash;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

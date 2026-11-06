@@ -19,4 +19,8 @@ public interface ProjectRepository extends JpaRepository<Project, Long> {
     List<Project> findAllByProfileIdOrderByStartDateDesc(Long profileId);
 
     Optional<Project> findByIdAndProfileId(Long id, Long profileId);
+
+    long countByProfileId(Long profileId);
+
+    boolean existsByProfileIdAndCreatedAtAfter(Long profileId, java.time.Instant createdAt);
 }

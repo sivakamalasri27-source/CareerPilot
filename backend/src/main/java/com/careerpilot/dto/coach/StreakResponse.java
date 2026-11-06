@@ -18,4 +18,20 @@ public class StreakResponse {
     private int currentWeekCompletedTasks;
     private int currentWeekTotalTasks;
     private boolean currentWeekGoalMet;
+
+    public int getActiveStreakWeeks() {
+        return currentStreakWeeks;
+    }
+
+    public int getCompletedTasksThisWeek() {
+        return currentWeekCompletedTasks;
+    }
+
+    public int getTotalTasksThisWeek() {
+        return currentWeekTotalTasks;
+    }
+
+    public boolean isCurrentWeekMetGoal() {
+        return currentWeekGoalMet;
+    }
 }

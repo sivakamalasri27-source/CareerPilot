@@ -1,6 +1,12 @@
 spring:
   application:
     name: careerpilot-backend
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:backend/.env[.properties]
+      - optional:file:./backend/.env[.properties]
+      - optional:file:../.env[.properties]
   profiles:
     active: dev
   jpa:
@@ -28,9 +34,9 @@ security:
 
 llm:
   provider: ${LLM_PROVIDER:gemini}
-  api-key: ${LLM_API_KEY:${GEMINI_API_KEY:}}
-  model: ${LLM_MODEL:gemini-1.5-flash}
-  timeout-seconds: 15
+  api-key: ${GEMINI_API_KEY:${LLM_API_KEY:}}
+  model: ${LLM_MODEL:gemini-flash-latest}
+  timeout-seconds: ${LLM_TIMEOUT_SECONDS:90}
   rate-limit:
     capacity: ${RATE_LIMIT_CAPACITY:20}
     refill-tokens: ${RATE_LIMIT_REFILL_TOKENS:20}
@@ -53,6 +59,10 @@ resilience4j:
           - java.util.concurrent.TimeoutException
           - org.springframework.web.client.ResourceAccessException
           - org.springframework.web.client.HttpServerErrorException
+  timelimiter:
+    instances:
+      llmService:
+        timeout-duration: 100s
 
 management:
   endpoints:
@@ -71,3 +81,5 @@ logging:
   level:
     root: INFO
     com.careerpilot: DEBUG
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN

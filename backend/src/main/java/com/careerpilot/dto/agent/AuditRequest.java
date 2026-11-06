@@ -15,4 +15,7 @@ public class AuditRequest {
 
     @Schema(description = "Optional target role override. If omitted, uses profile's target role.", example = "Java Backend Developer")
     private String targetRole;
+
+    @Schema(description = "If true, bypasses unchanged profile cache check and re-runs the audit.", example = "false")
+    private Boolean force;
 }

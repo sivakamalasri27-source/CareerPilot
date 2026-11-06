@@ -21,7 +21,7 @@ public class ProfileRequest {
     @Size(max = 2000, message = "About section cannot exceed 2000 characters")
     private String about;
 
-    @Pattern(regexp = "^$|^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$", message = "Invalid GitHub username format")
+    @Pattern(regexp = "^$|^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$", message = "Enter only your GitHub username, for example octocat")
     @Size(max = 39, message = "GitHub username cannot exceed 39 characters")
     private String githubUsername;
 
@@ -44,4 +44,37 @@ public class ProfileRequest {
     private String portfolioUrl;
 
     private Long version;
+
+    public void setGithubUsername(String raw) {
+        if (raw == null) {
+            this.githubUsername = null;
+            return;
+        }
+        String cleaned = raw.trim();
+        cleaned = cleaned.replaceAll("^(?i)(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/", "");
+        cleaned = cleaned.replaceAll("^@", "");
+        int slashIdx = cleaned.indexOf('/');
+        if (slashIdx != -1) {
+            cleaned = cleaned.substring(0, slashIdx);
+        }
+        this.githubUsername = cleaned.trim();
+    }
+
+    public static class ProfileRequestBuilder {
+        public ProfileRequestBuilder githubUsername(String raw) {
+            if (raw == null) {
+                this.githubUsername = null;
+                return this;
+            }
+            String cleaned = raw.trim();
+            cleaned = cleaned.replaceAll("^(?i)(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/", "");
+            cleaned = cleaned.replaceAll("^@", "");
+            int slashIdx = cleaned.indexOf('/');
+            if (slashIdx != -1) {
+                cleaned = cleaned.substring(0, slashIdx);
+            }
+            this.githubUsername = cleaned.trim();
+            return this;
+        }
+    }
 }

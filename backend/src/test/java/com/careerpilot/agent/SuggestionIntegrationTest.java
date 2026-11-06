@@ -6,11 +6,10 @@ import com.careerpilot.dto.auth.AuthResponse;
 import com.careerpilot.dto.auth.RegisterRequest;
 import com.careerpilot.dto.profile.ProjectRequest;
 import com.careerpilot.dto.profile.ProjectResponse;
+import com.careerpilot.agent.dto.ParsedProjectDto;
 import com.careerpilot.dto.suggestion.ApproveSuggestionRequest;
 import com.careerpilot.dto.suggestion.SuggestionResponse;
-import com.careerpilot.entity.AgentSuggestion;
-import com.careerpilot.entity.Project;
-import com.careerpilot.entity.SuggestionStatus;
+import com.careerpilot.entity.*;
 import com.careerpilot.repository.AgentSuggestionRepository;
 import com.careerpilot.repository.ProjectRepository;
 import com.careerpilot.repository.UserRepository;
@@ -58,6 +57,15 @@ class SuggestionIntegrationTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private com.careerpilot.repository.ProfileRepository profileRepository;
+
+    @Autowired
+    private com.careerpilot.repository.ProfileSkillRepository profileSkillRepository;
+
+    @Autowired
+    private com.careerpilot.repository.SkillRepository skillRepository;
 
     @Autowired
     private Cache<String, Object> aiResultCache;
@@ -400,5 +408,219 @@ class SuggestionIntegrationTest {
                 .andExpect(jsonPath("$.content").isArray())
                 .andExpect(jsonPath("$.totalElements").value(org.hamcrest.Matchers.greaterThanOrEqualTo(2)))
                 .andExpect(jsonPath("$.content[0].status").value("PENDING"));
+    }
+
+    @Test
+    @DisplayName("Resume Project Import: Approving creates new project with title, description, role, tech, and bullets")
+    void testApproveResumeProjectCreatesProject() throws Exception {
+        String email = "resume.proj." + UUID.randomUUID() + "@college.edu";
+        RegisterRequest registerRequest = RegisterRequest.builder()
+                .email(email)
+                .password("Password123!")
+                .fullName("Career Tester")
+                .build();
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(registerRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String token = objectMapper.readValue(res.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+
+        User user = userRepository.findByEmail(email).orElseThrow();
+        Profile profile = profileRepository.findByUserId(user.getId()).orElseThrow();
+
+        ParsedProjectDto projectDto = ParsedProjectDto.builder()
+                .title("Real-Time Analytics Pipeline")
+                .description("Streaming data engine built with Flink and Kafka")
+                .technologies("Java, Apache Kafka, Apache Flink")
+                .role("Data Engineer")
+                .bullets(List.of("Processed 1M events/sec with sub-second latency", "Engineered fault-tolerant state checkpointing"))
+                .build();
+
+        AgentSuggestion suggestion = AgentSuggestion.builder()
+                .profile(profile)
+                .agentName("ResumeParserAgent")
+                .targetSection("PROJECT")
+                .targetId(null)
+                .originalText("")
+                .originalTextHash("")
+                .suggestedText(objectMapper.writeValueAsString(projectDto))
+                .rationale("Imported project from resume")
+                .status(SuggestionStatus.PENDING)
+                .build();
+        suggestion = agentSuggestionRepository.save(suggestion);
+
+        // Approve the suggestion
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestion.getId() + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"));
+
+        // Verify that the project was created in the database
+        List<Project> projects = projectRepository.findAllByProfileId(profile.getId(), org.springframework.data.domain.Pageable.unpaged()).getContent();
+        assertThat(projects).hasSize(1);
+        Project created = projects.get(0);
+        assertThat(created.getTitle()).isEqualTo("Real-Time Analytics Pipeline");
+        assertThat(created.getDescription()).isEqualTo("Streaming data engine built with Flink and Kafka");
+        assertThat(created.getTechnologies()).isEqualTo("Java, Apache Kafka, Apache Flink");
+        assertThat(created.getRole()).isEqualTo("Data Engineer");
+        assertThat(created.getBullets()).containsExactly(
+                "Processed 1M events/sec with sub-second latency",
+                "Engineered fault-tolerant state checkpointing"
+        );
+    }
+
+    @Test
+    @DisplayName("Resume Skill Import: Approving skips duplicate if skill already exists on profile")
+    void testApproveResumeSkillDuplicateSkipped() throws Exception {
+        String email = "resume.skill." + UUID.randomUUID() + "@college.edu";
+        RegisterRequest registerRequest = RegisterRequest.builder()
+                .email(email)
+                .password("Password123!")
+                .fullName("Career Tester")
+                .build();
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(registerRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String token = objectMapper.readValue(res.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+
+        User user = userRepository.findByEmail(email).orElseThrow();
+        Profile profile = profileRepository.findByUserId(user.getId()).orElseThrow();
+
+        // Create initial Java skill if not already present
+        Skill skill = skillRepository.findByNameIgnoreCase("Java")
+                .orElseGet(() -> skillRepository.save(Skill.builder().name("Java").category("TECHNICAL").build()));
+        if (!profileSkillRepository.existsByProfileIdAndSkillNameIgnoreCase(profile.getId(), "Java")) {
+            profileSkillRepository.save(ProfileSkill.builder()
+                    .profile(profile)
+                    .skill(skill)
+                    .claimedLevel("INTERMEDIATE")
+                    .verificationStatus(VerificationStatus.UNVERIFIED)
+                    .build());
+        }
+
+        // Suggestion to add Java (duplicate)
+        AgentSuggestion suggestion = AgentSuggestion.builder()
+                .profile(profile)
+                .agentName("ResumeParserAgent")
+                .targetSection("SKILL")
+                .targetId(null)
+                .originalText("")
+                .originalTextHash("")
+                .suggestedText("Java (ADVANCED)")
+                .rationale("Imported skill from resume")
+                .status(SuggestionStatus.PENDING)
+                .build();
+        suggestion = agentSuggestionRepository.save(suggestion);
+
+        // Approve suggestion
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestion.getId() + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"));
+
+        // Verify count of skills is still 1
+        long skillCount = profileSkillRepository.countByProfileId(profile.getId());
+        assertThat(skillCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Validation: Malformed JSON suggestion payload returns 400 Bad Request")
+    void testApproveMalformedJsonReturns400() throws Exception {
+        String email = "malformed.json." + UUID.randomUUID() + "@college.edu";
+        RegisterRequest registerRequest = RegisterRequest.builder()
+                .email(email)
+                .password("Password123!")
+                .fullName("Career Tester")
+                .build();
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(registerRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String token = objectMapper.readValue(res.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+
+        User user = userRepository.findByEmail(email).orElseThrow();
+        Profile profile = profileRepository.findByUserId(user.getId()).orElseThrow();
+
+        AgentSuggestion suggestion = AgentSuggestion.builder()
+                .profile(profile)
+                .agentName("ResumeParserAgent")
+                .targetSection("PROJECT")
+                .targetId(null)
+                .originalText("")
+                .originalTextHash("")
+                .suggestedText("{not a valid json string: broken}")
+                .rationale("Imported project with malformed JSON")
+                .status(SuggestionStatus.PENDING)
+                .build();
+        suggestion = agentSuggestionRepository.save(suggestion);
+
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestion.getId() + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed project suggestion JSON payload"));
+    }
+
+    @Test
+    @DisplayName("Security: User B cannot approve User A suggestion and receives 404 Not Found")
+    void testUserBCannotApproveUserASuggestionReturns404() throws Exception {
+        String tokenA = registerAndGetToken("userA.approve");
+        String tokenB = registerAndGetToken("userB.approve");
+        Long projectIdA = createSampleProject(tokenA);
+
+        TranslateExperienceRequest request = TranslateExperienceRequest.builder()
+                .projectId(projectIdA)
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/v1/agents/translate-experience")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        Long suggestionIdA = objectMapper.readTree(mvcResult.getResponse().getContentAsString())
+                .path("suggestion").path("id").asLong();
+
+        // User B attempts to approve User A's suggestion
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestionIdA + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenB))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("Conflict: Double approve on already decided suggestion returns 409 Conflict")
+    void testDoubleApproveReturns409() throws Exception {
+        String token = registerAndGetToken("double.approve");
+        Long projectId = createSampleProject(token);
+
+        TranslateExperienceRequest request = TranslateExperienceRequest.builder()
+                .projectId(projectId)
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/v1/agents/translate-experience")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        Long suggestionId = objectMapper.readTree(mvcResult.getResponse().getContentAsString())
+                .path("suggestion").path("id").asLong();
+
+        // First approval: succeeds
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"));
+
+        // Second approval: returns 409 Conflict
+        mockMvc.perform(patch("/api/v1/suggestions/" + suggestionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("Suggestion has already been decided")));
     }
 }

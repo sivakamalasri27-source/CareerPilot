@@ -70,6 +70,64 @@ class AuthControllerTest {
     }
 
     @Test
+    @DisplayName("Should successfully register when JSON body uses fullName field")
+    void shouldRegisterUserSuccessfullyWithFilledFullName() throws Exception {
+        String json = """
+                {
+                  "fullName": "Jane Doe",
+                  "email": "jane.doe@college.edu",
+                  "password": "Password123!"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.user.fullName").value("Jane Doe"))
+                .andExpect(jsonPath("$.user.email").value("jane.doe@college.edu"));
+    }
+
+    @Test
+    @DisplayName("Should successfully register when JSON body uses 'name' alias")
+    void shouldRegisterUserSuccessfullyWhenJsonUsesNameAlias() throws Exception {
+        String json = """
+                {
+                  "name": "Alias User",
+                  "email": "alias.user@college.edu",
+                  "password": "Password123!"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.user.fullName").value("Alias User"));
+    }
+
+    @Test
+    @DisplayName("Should return 400 Bad Request when fullName is blank")
+    void shouldFailRegistrationWhenFullNameIsBlank() throws Exception {
+        String json = """
+                {
+                  "fullName": "   ",
+                  "email": "blank.name@college.edu",
+                  "password": "Password123!"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.validationErrors.fullName").value("Full name is required"));
+    }
+
+    @Test
     @DisplayName("Should return 409 Conflict when registering with duplicate email")
     void shouldFailRegistrationWhenEmailIsDuplicate() throws Exception {
         RegisterRequest request = RegisterRequest.builder()
@@ -104,7 +162,7 @@ class AuthControllerTest {
         RegisterRequest weakPasswordRequest = RegisterRequest.builder()
                 .email("weak@college.edu")
                 .fullName("Weak Password User")
-                .password("weakpass") // missing uppercase, digit, special char, < 8 chars
+                .password("123") // too short (< 6 chars)
                 .build();
 
         mockMvc.perform(post("/api/v1/auth/register")

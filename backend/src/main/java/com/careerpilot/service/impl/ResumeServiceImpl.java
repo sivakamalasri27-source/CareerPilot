@@ -237,6 +237,47 @@ public class ResumeServiceImpl implements ResumeService {
             }
         }
 
+        // 5. Process Education
+        if (parsed.getEducation() != null) {
+            Set<String> existingInstitutions = (profile.getEducation() != null)
+                    ? profile.getEducation().stream()
+                    .map(e -> (e.getInstitution() != null ? e.getInstitution().toLowerCase().trim() : "") + "|" +
+                              (e.getDegree() != null ? e.getDegree().toLowerCase().trim() : ""))
+                    .collect(Collectors.toSet())
+                    : new HashSet<>();
+
+            for (ParsedEducationDto eduDto : parsed.getEducation()) {
+                if (eduDto == null || eduDto.getInstitution() == null || eduDto.getInstitution().isBlank()) {
+                    continue;
+                }
+                String key = eduDto.getInstitution().toLowerCase().trim() + "|" +
+                             (eduDto.getDegree() != null ? eduDto.getDegree().toLowerCase().trim() : "");
+                if (existingInstitutions.contains(key)) {
+                    log.debug("Skipping duplicate education from resume: {}", eduDto.getInstitution());
+                    continue;
+                }
+                existingInstitutions.add(key);
+
+                String serializedEdu;
+                try {
+                    serializedEdu = objectMapper.writeValueAsString(eduDto);
+                } catch (Exception e) {
+                    serializedEdu = eduDto.getInstitution();
+                }
+
+                AgentSuggestion suggestion = suggestionService.createSuggestion(
+                        profile,
+                        ResumeParserAgent.AGENT_NAME,
+                        "EDUCATION",
+                        null,
+                        "",
+                        serializedEdu,
+                        "Imported education from resume (" + sourceFileName + ")"
+                );
+                suggestions.add(suggestionService.mapToResponse(suggestion));
+            }
+        }
+
         return suggestions;
     }
 }

@@ -25,6 +25,8 @@ public interface ProfileSkillRepository extends JpaRepository<ProfileSkill, Long
 
     long countByProfileId(Long profileId);
 
+    boolean existsByProfileIdAndCreatedAtAfter(Long profileId, java.time.Instant createdAt);
+
     @org.springframework.data.jpa.repository.Query("SELECT CASE WHEN COUNT(ps) > 0 THEN true ELSE false END FROM ProfileSkill ps WHERE ps.profile.id = :profileId AND LOWER(ps.skill.name) = LOWER(:skillName)")
     boolean existsByProfileIdAndSkillNameIgnoreCase(@org.springframework.data.repository.query.Param("profileId") Long profileId, @org.springframework.data.repository.query.Param("skillName") String skillName);
 }

@@ -338,6 +338,64 @@ class ProfileControllerTest {
     }
 
     @Test
+    @DisplayName("Should normalize GitHub URL and handle leading/trailing slashes and @")
+    void shouldNormalizeGithubUsernameSuccessfully() throws Exception {
+        String token = registerAndGetToken("github-normalizer@college.edu", "GitHub Normalizer");
+
+        // Test with full https URL with trailing slash
+        String jsonPayload = """
+                {
+                    "headline": "Junior Dev",
+                    "githubUsername": "https://github.com/octocat/"
+                }
+                """;
+
+        mockMvc.perform(put("/api/v1/profile")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.githubUsername").value("octocat"));
+
+        // Test with github.com/ without protocol
+        String jsonPayload2 = """
+                {
+                    "headline": "Junior Dev",
+                    "githubUsername": "github.com/octo-cat"
+                }
+                """;
+
+        mockMvc.perform(put("/api/v1/profile")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload2))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.githubUsername").value("octo-cat"));
+    }
+
+    @Test
+    @DisplayName("Should reject invalid GitHub username and return specific field error message")
+    void shouldRejectInvalidGithubUsername() throws Exception {
+        String token = registerAndGetToken("invalid-gh@college.edu", "Invalid GH");
+
+        // Consecutive hyphens or leading hyphen
+        String jsonPayload = """
+                {
+                    "headline": "Junior Dev",
+                    "githubUsername": "-invalid-user"
+                }
+                """;
+
+        mockMvc.perform(put("/api/v1/profile")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.validationErrors.githubUsername").value("Enter only your GitHub username, for example octocat"))
+                .andExpect(jsonPath("$.message").value(containsString("githubUsername: Enter only your GitHub username, for example octocat")));
+    }
+
+    @Test
     @DisplayName("Should reject unauthenticated access to profile with 401 Unauthorized")
     void shouldRejectUnauthenticatedAccess() throws Exception {
         mockMvc.perform(get("/api/v1/profile"))

@@ -1,0 +1,90 @@
+# =============================================================================
+# Test base configuration — shadows src/main/resources/application.yml
+# Disables spring.config.import for .env files so .env does not override tests.
+# =============================================================================
+careerpilot:
+  is-test: true
+
+spring:
+  application:
+    name: careerpilot-backend
+  config:
+    import: ""
+  profiles:
+    active: test
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+server:
+  port: ${SERVER_PORT:8080}
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+    expiration-ms: ${JWT_EXPIRATION_MS:900000}
+    refresh-expiration-ms: ${REFRESH_TOKEN_EXPIRATION_MS:604800000}
+
+LLM_PROVIDER: fake
+llm:
+  provider: fake
+  api-key: test-api-key
+  model: gemini-1.5-flash
+  timeout-seconds: 3
+  rate-limit:
+    capacity: 3
+    refill-tokens: 3
+    refill-duration-seconds: 60
+  cache:
+    ttl-minutes: 5
+    max-size: 100
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      llmService:
+        sliding-window-size: 5
+        minimum-number-of-calls: 3
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10000ms
+        permitted-number-of-calls-in-half-open-state: 2
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+  timelimiter:
+    instances:
+      llmService:
+        timeout-duration: 100s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [traceId=%X{traceId:-}] - %msg%n"
+  level:
+    root: WARN
+    com.careerpilot: INFO
+    org.flywaydb: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN

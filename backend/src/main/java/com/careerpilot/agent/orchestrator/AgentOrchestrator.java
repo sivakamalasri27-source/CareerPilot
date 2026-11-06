@@ -12,13 +12,20 @@ import com.careerpilot.agent.skillgap.SkillGapAgent;
 import com.careerpilot.agent.skillgap.SkillGapCalculator;
 import com.careerpilot.agent.translator.ExperienceTranslatorAgent;
 import com.careerpilot.agent.util.ProfileFormatter;
+import com.careerpilot.agent.jobmatch.JobMatchAgent;
+import com.careerpilot.agent.jobmatch.JobMatchCalculator;
+import com.careerpilot.ai.ratelimit.RateLimiterService;
+import com.careerpilot.ai.service.AiExecutionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.careerpilot.dto.agent.TranslateExperienceRequest;
 import com.careerpilot.dto.agent.TranslateExperienceResponse;
 import com.careerpilot.dto.agent.VerifySkillsResponse;
+import com.careerpilot.dto.jobmatch.*;
 import com.careerpilot.dto.skillgap.SkillGapComputationResult;
 import com.careerpilot.dto.skillgap.SkillGapResponse;
 import com.careerpilot.dto.suggestion.SuggestionResponse;
 import com.careerpilot.entity.*;
+import com.careerpilot.exception.AiServiceUnavailableException;
 import com.careerpilot.exception.ResourceNotFoundException;
 import com.careerpilot.repository.*;
 import com.careerpilot.service.SuggestionService;
@@ -39,7 +46,7 @@ import java.util.concurrent.*;
 @RequiredArgsConstructor
 public class AgentOrchestrator {
 
-    private static final long ORCHESTRATOR_TIMEOUT_SECONDS = 25;
+    private static final long ORCHESTRATOR_TIMEOUT_SECONDS = 100;
 
     private final ProfileAuditorAgent profileAuditorAgent;
     private final RecruiterSimulatorAgent recruiterSimulatorAgent;
@@ -55,6 +62,11 @@ public class AgentOrchestrator {
     private final AuditReportRepository auditReportRepository;
     private final ProjectRepository projectRepository;
     private final SuggestionService suggestionService;
+    private final ObjectMapper objectMapper;
+    private final JobMatchCalculator jobMatchCalculator;
+    private final JobMatchAgent jobMatchAgent;
+    private final JobMatchReportRepository jobMatchReportRepository;
+    private final RateLimiterService rateLimiterService;
 
     @Qualifier("orchestratorExecutor")
     private final Executor orchestratorExecutor;
@@ -65,13 +77,37 @@ public class AgentOrchestrator {
      */
     @Transactional
     public FullAuditResponse executeFullAudit(User user, Profile profile, String targetRole) {
-        log.info("Orchestrating FULL_AUDIT for profile ID: {}", profile != null ? profile.getId() : null);
+        return executeFullAudit(user, profile, targetRole, false);
+    }
+
+    @Transactional
+    public FullAuditResponse executeFullAudit(User user, Profile profile, String targetRole, boolean force) {
+        log.info("Orchestrating FULL_AUDIT for profile ID: {}, force={}", profile != null ? profile.getId() : null, force);
 
         // 1. Fail-fast validation: Reject empty or near-empty profiles with HTTP 400
         ProfileFormatter.validateNotEmpty(profile);
 
         // 2. Format profile on caller thread to prevent concurrent Hibernate session access
         String formattedProfile = ProfileFormatter.formatProfileForAi(profile);
+        String profileContentHash = AiExecutionService.computeProfileContentHash(
+                formattedProfile + "|" + (targetRole != null ? targetRole.trim() : ""));
+
+        // Check if profile is unchanged since the last SUCCESSFUL audit
+        Optional<AuditReport> latestReportOpt = findLatestSuccessfulReport(profile.getId());
+        if (!force && latestReportOpt.isPresent()) {
+            AuditReport latest = latestReportOpt.get();
+            if (profileContentHash.equals(latest.getProfileContentHash())) {
+                log.info("Profile content unchanged for profile ID: {}. Returning existing audit report ID: {}", profile.getId(), latest.getId());
+                return FullAuditResponse.builder()
+                        .reportId(latest.getId())
+                        .requestType(RequestType.FULL_AUDIT)
+                        .auditorResult(reconstructAuditorResult(latest))
+                        .recruiterResult(reconstructRecruiterResult(latest))
+                        .createdAt(latest.getCreatedAt() != null ? latest.getCreatedAt() : Instant.now())
+                        .unchanged(true)
+                        .build();
+            }
+        }
 
         AgentContext<String> ctx = AgentContext.<String>builder()
                 .user(user)
@@ -121,10 +157,20 @@ public class AgentOrchestrator {
                 () -> AgentResult.failure("Recruiter simulation timed out or was cancelled")
         );
 
-        // 6. Persist audit results to database
-        AuditReport report = persistAuditReport(profile, auditorResult, recruiterResult, RequestType.FULL_AUDIT);
+        // 6. Fail-fast if auditor failed or returned fallback - NEVER persist or display failed audit
+        if (auditorResult == null || !auditorResult.isSuccessful()) {
+            String rawError = (auditorResult != null && auditorResult.getErrorMessage() != null && !auditorResult.getErrorMessage().isBlank())
+                    ? auditorResult.getErrorMessage()
+                    : "AI service failed to evaluate profile";
+            String cleanReason = cleanErrorMessage(rawError);
+            log.warn("Full audit failed or returned fallback for profile ID {}: {}", profile.getId(), cleanReason);
+            throw new AiServiceUnavailableException("AI service unavailable: " + cleanReason + ". Please retry.");
+        }
 
-        // 7. Optionally create suggestions from auditor weaknesses for headline and about
+        // 7. Persist audit results to database
+        AuditReport report = persistAuditReport(profile, auditorResult, recruiterResult, RequestType.FULL_AUDIT, profileContentHash);
+
+        // 8. Optionally create suggestions from auditor weaknesses for headline and about
         createSuggestionsFromWeaknesses(profile, auditorResult);
 
         return FullAuditResponse.builder()
@@ -133,6 +179,7 @@ public class AgentOrchestrator {
                 .auditorResult(auditorResult)
                 .recruiterResult(recruiterResult)
                 .createdAt(report.getCreatedAt() != null ? report.getCreatedAt() : Instant.now())
+                .unchanged(false)
                 .build();
     }
 
@@ -200,7 +247,8 @@ public class AgentOrchestrator {
             Profile profile,
             AgentResult<ProfileAuditResult> auditorResult,
             AgentResult<RecruiterSimulationResult> recruiterResult,
-            RequestType requestType
+            RequestType requestType,
+            String profileContentHash
     ) {
         int overallScore = 50;
         Map<String, Object> sectionScores = new HashMap<>();
@@ -233,9 +281,156 @@ public class AgentOrchestrator {
                 .weaknesses(weaknesses)
                 .recruiterFeedback(recruiterFeedback)
                 .requestType(requestType.name())
+                .profileContentHash(profileContentHash)
                 .build();
 
         return auditReportRepository.save(report);
+    }
+
+    private AgentResult<ProfileAuditResult> reconstructAuditorResult(AuditReport report) {
+        if (report == null) {
+            return AgentResult.failure("No report found");
+        }
+        SectionScores sectionScores = null;
+        if (report.getSectionScores() != null) {
+            Map<String, Object> map = report.getSectionScores();
+            sectionScores = SectionScores.builder()
+                    .headline(getIntValue(map, "headline"))
+                    .about(getIntValue(map, "about"))
+                    .skills(getIntValue(map, "skills"))
+                    .projects(getIntValue(map, "projects"))
+                    .education(getIntValue(map, "education"))
+                    .build();
+        }
+        List<ProfileWeakness> weaknesses = new ArrayList<>();
+        if (report.getWeaknesses() != null) {
+            for (Map<String, Object> wMap : report.getWeaknesses()) {
+                weaknesses.add(ProfileWeakness.builder()
+                        .section((String) wMap.get("section"))
+                        .weakText((String) wMap.get("weakText"))
+                        .reason((String) wMap.get("reason"))
+                        .improvementSuggestion((String) wMap.get("improvementSuggestion"))
+                        .build());
+            }
+        }
+        ProfileAuditResult auditResult = ProfileAuditResult.builder()
+                .overallScore(report.getOverallScore())
+                .sectionScores(sectionScores)
+                .weaknesses(weaknesses)
+                .build();
+        return AgentResult.success(auditResult);
+    }
+
+    private AgentResult<RecruiterSimulationResult> reconstructRecruiterResult(AuditReport report) {
+        if (report == null || report.getRecruiterFeedback() == null) {
+            return AgentResult.success(RecruiterSimulationResult.builder().build());
+        }
+        try {
+            RecruiterSimulationResult result = objectMapper.convertValue(
+                    report.getRecruiterFeedback(), RecruiterSimulationResult.class);
+            return AgentResult.success(result);
+        } catch (Exception e) {
+            log.warn("Could not deserialize recruiter feedback: {}", e.getMessage());
+            return AgentResult.success(RecruiterSimulationResult.builder().build());
+        }
+    }
+
+    private int getIntValue(Map<String, Object> map, String key) {
+        if (map == null || !map.containsKey(key)) return 50;
+        Object val = map.get(key);
+        if (val instanceof Number num) return num.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(val));
+        } catch (NumberFormatException e) {
+            return 50;
+        }
+    }
+
+    public Optional<AuditReport> findLatestSuccessfulReport(Long profileId) {
+        if (profileId == null) {
+            return Optional.empty();
+        }
+        List<AuditReport> reports = auditReportRepository.findAllByProfileIdOrderByCreatedAtDesc(profileId);
+        return reports.stream()
+                .filter(r -> !isFailedReport(r))
+                .findFirst();
+    }
+
+    public static boolean isFailedReport(AuditReport report) {
+        if (report == null || report.getOverallScore() == null) {
+            return true;
+        }
+        if (report.getOverallScore() != 50) {
+            return false;
+        }
+        Map<String, Object> map = report.getSectionScores();
+        if (map == null || map.isEmpty()) {
+            return true;
+        }
+        int h = getScoreFromMap(map, "headline");
+        int a = getScoreFromMap(map, "about");
+        int s = getScoreFromMap(map, "skills");
+        int p = getScoreFromMap(map, "projects");
+        int e = getScoreFromMap(map, "education");
+        if (h == 0 && a == 0 && s == 0 && p == 0 && e == 0) {
+            return true;
+        }
+        List<Map<String, Object>> weaknesses = report.getWeaknesses();
+        return weaknesses == null || weaknesses.isEmpty();
+    }
+
+    private static int getScoreFromMap(Map<String, Object> map, String key) {
+        if (map == null || !map.containsKey(key)) return 0;
+        Object val = map.get(key);
+        if (val instanceof Number num) return num.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(val));
+        } catch (Exception ex) {
+            return 0;
+        }
+    }
+
+    private String cleanErrorMessage(String msg) {
+        if (msg == null || msg.isBlank()) {
+            return "AI service is unavailable";
+        }
+        String s = msg.trim();
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            if (s.startsWith("Auditor failed: ")) {
+                s = s.substring("Auditor failed: ".length()).trim();
+                changed = true;
+            } else if (s.startsWith("Auditor failed unexpectedly: ")) {
+                s = s.substring("Auditor failed unexpectedly: ".length()).trim();
+                changed = true;
+            } else if (s.startsWith("AI service unavailable: ")) {
+                s = s.substring("AI service unavailable: ".length()).trim();
+                changed = true;
+            }
+        }
+        if (s.endsWith(". Please retry.")) {
+            s = s.substring(0, s.length() - ". Please retry.".length()).trim();
+        }
+        if (s.endsWith(".")) {
+            s = s.substring(0, s.length() - 1).trim();
+        }
+        return s;
+    }
+
+    @Transactional
+    public void cleanupFailedReports() {
+        try {
+            List<AuditReport> reports = auditReportRepository.findAll();
+            for (AuditReport r : reports) {
+                if (isFailedReport(r)) {
+                    log.info("Deleting legacy failed audit report ID: {}", r.getId());
+                    auditReportRepository.delete(r);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to cleanup legacy failed reports: {}", ex.getMessage());
+        }
     }
 
     /**
@@ -659,5 +854,180 @@ public class AgentOrchestrator {
         );
 
         return result.getData();
+    }
+
+    /**
+     * Orchestrates Job Match analysis by executing deterministic extraction first
+     * and synthesizing fit summary, profile tweaks, and interview topics via JobMatchAgent.
+     */
+    @Transactional
+    public JobMatchResponse executeJobMatch(User user, Profile profile, JobMatchRequest request) {
+        log.info("Orchestrating JOB_MATCH for user ID: {}, profile ID: {}",
+                user != null ? user.getId() : null, profile != null ? profile.getId() : null);
+
+        if (user != null && user.getId() != null) {
+            rateLimiterService.consumeOrThrow(user.getId());
+        }
+
+        List<ProfileSkill> claimedSkills = (profile != null && profile.getProfileSkills() != null)
+                ? profile.getProfileSkills()
+                : Collections.emptyList();
+
+        Map<String, SkillVerificationStatus> verifiedStatusMap = new HashMap<>();
+        String githubUsername = (profile != null) ? profile.getGithubUsername() : null;
+        if (githubUsername != null && !githubUsername.isBlank()) {
+            List<GitHubRepoDto> repos = gitHubTool.fetchPublicRepositories(githubUsername);
+            SkillVerificationResult proof = skillEvidenceMatcher.matchSkillsToRepositories(claimedSkills, repos);
+            if (proof != null && proof.getSkills() != null) {
+                for (SkillEvidence se : proof.getSkills()) {
+                    if (se.getSkillName() != null) {
+                        verifiedStatusMap.put(SkillGapCalculator.normalize(se.getSkillName()), se.getStatus());
+                    }
+                }
+            }
+        }
+
+        // 1. Plain Java deterministic matching
+        JobMatchComputationResult computation = jobMatchCalculator.calculateJobMatch(
+                request.getJobDescription(),
+                request.getJobTitle(),
+                request.getCompanyName(),
+                claimedSkills,
+                verifiedStatusMap
+        );
+
+        // 2. Synthesize Fit Summary, 3 Profile Tweaks, and Interview Topics via LLM
+        AgentContext<JobMatchComputationResult> ctx = AgentContext.<JobMatchComputationResult>builder()
+                .user(user)
+                .profile(profile)
+                .input(computation)
+                .build();
+
+        CompletableFuture<AgentResult<JobMatchResult>> matchFuture = CompletableFuture.supplyAsync(
+                () -> jobMatchAgent.execute(ctx),
+                orchestratorExecutor
+        ).exceptionally(ex -> {
+            log.error("JobMatchAgent threw unhandled exception: {}", ex.getMessage(), ex);
+            return AgentResult.failure("Job match evaluation failed: " + ex.getMessage());
+        });
+
+        try {
+            matchFuture.get(ORCHESTRATOR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Job match future completed with exception or timeout: {}", e.getMessage());
+        }
+
+        AgentResult<JobMatchResult> agentResult = resolveFutureWithFallback(
+                matchFuture,
+                () -> jobMatchAgent.execute(ctx)
+        );
+
+        JobMatchResult llmResult = (agentResult != null && agentResult.getData() != null)
+                ? agentResult.getData()
+                : jobMatchAgent.execute(ctx).getData();
+
+        // 3. Persist to database
+        JobMatchReport report = persistJobMatchReport(user, profile, request, computation, llmResult);
+
+        return mapReportToResponse(report);
+    }
+
+    @Transactional(readOnly = true)
+    public List<JobMatchResponse> getJobMatchHistory(User user) {
+        if (user == null || user.getId() == null) {
+            return Collections.emptyList();
+        }
+        List<JobMatchReport> reports = jobMatchReportRepository.findAllByUserIdOrderByCreatedAtDesc(user.getId());
+        return reports.stream().map(this::mapReportToResponse).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public JobMatchResponse getJobMatchById(User user, Long reportId) {
+        JobMatchReport report = jobMatchReportRepository.findByIdAndUserId(reportId, user.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Job match report not found with id: " + reportId));
+        return mapReportToResponse(report);
+    }
+
+    private JobMatchReport persistJobMatchReport(
+            User user,
+            Profile profile,
+            JobMatchRequest request,
+            JobMatchComputationResult computation,
+            JobMatchResult llmResult
+    ) {
+        List<Map<String, Object>> matchedMaps = new ArrayList<>();
+        if (computation.getMatchedSkills() != null) {
+            for (JobMatchedSkillDto s : computation.getMatchedSkills()) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("skillName", s.getSkillName());
+                map.put("claimedLevel", s.getClaimedLevel());
+                map.put("verificationStatus", s.getVerificationStatus());
+                matchedMaps.add(map);
+            }
+        }
+
+        List<Map<String, Object>> missingMaps = new ArrayList<>();
+        if (computation.getMissingSkills() != null) {
+            for (JobMissingSkillDto s : computation.getMissingSkills()) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("skillName", s.getSkillName());
+                map.put("category", s.getCategory());
+                missingMaps.add(map);
+            }
+        }
+
+        JobMatchReport report = JobMatchReport.builder()
+                .user(user)
+                .profile(profile)
+                .jobTitle(request.getJobTitle())
+                .companyName(request.getCompanyName())
+                .jobDescription(request.getJobDescription())
+                .matchPercentage(computation.getMatchPercentage())
+                .extractedExperience(computation.getExtractedExperience())
+                .matchedSkills(matchedMaps)
+                .missingSkills(missingMaps)
+                .fitSummary(llmResult != null ? llmResult.getFitSummary() : "")
+                .profileTweaks(llmResult != null && llmResult.getProfileTweaks() != null ? llmResult.getProfileTweaks() : Collections.emptyList())
+                .interviewTopics(llmResult != null && llmResult.getInterviewTopics() != null ? llmResult.getInterviewTopics() : Collections.emptyList())
+                .build();
+
+        return jobMatchReportRepository.save(report);
+    }
+
+    private JobMatchResponse mapReportToResponse(JobMatchReport report) {
+        List<JobMatchedSkillDto> matched = new ArrayList<>();
+        if (report.getMatchedSkills() != null) {
+            for (Map<String, Object> m : report.getMatchedSkills()) {
+                matched.add(JobMatchedSkillDto.builder()
+                        .skillName((String) m.get("skillName"))
+                        .claimedLevel((String) m.get("claimedLevel"))
+                        .verificationStatus((String) m.get("verificationStatus"))
+                        .build());
+            }
+        }
+
+        List<JobMissingSkillDto> missing = new ArrayList<>();
+        if (report.getMissingSkills() != null) {
+            for (Map<String, Object> m : report.getMissingSkills()) {
+                missing.add(JobMissingSkillDto.builder()
+                        .skillName((String) m.get("skillName"))
+                        .category((String) m.get("category"))
+                        .build());
+            }
+        }
+
+        return JobMatchResponse.builder()
+                .id(report.getId())
+                .jobTitle(report.getJobTitle())
+                .companyName(report.getCompanyName())
+                .extractedExperience(report.getExtractedExperience())
+                .matchPercentage(report.getMatchPercentage())
+                .matchedSkills(matched)
+                .missingSkills(missing)
+                .fitSummary(report.getFitSummary())
+                .profileTweaks(report.getProfileTweaks())
+                .interviewTopics(report.getInterviewTopics())
+                .createdAt(report.getCreatedAt())
+                .build();
     }
 }

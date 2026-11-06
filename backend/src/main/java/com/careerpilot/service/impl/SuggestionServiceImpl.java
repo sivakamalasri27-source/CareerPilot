@@ -1,15 +1,17 @@
 package com.careerpilot.service.impl;
 
+import com.careerpilot.agent.dto.ParsedEducationDto;
+import com.careerpilot.agent.dto.ParsedProjectDto;
+import com.careerpilot.agent.dto.ParsedSkillDto;
 import com.careerpilot.dto.common.PageResponse;
 import com.careerpilot.dto.suggestion.ApproveSuggestionRequest;
 import com.careerpilot.dto.suggestion.SuggestionResponse;
 import com.careerpilot.entity.*;
 import com.careerpilot.exception.ConflictException;
 import com.careerpilot.exception.ResourceNotFoundException;
-import com.careerpilot.repository.AgentSuggestionRepository;
-import com.careerpilot.repository.ProfileRepository;
-import com.careerpilot.repository.ProjectRepository;
+import com.careerpilot.repository.*;
 import com.careerpilot.service.SuggestionService;
+import com.careerpilot.util.SanitizationUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +35,9 @@ public class SuggestionServiceImpl implements SuggestionService {
     private final AgentSuggestionRepository agentSuggestionRepository;
     private final ProfileRepository profileRepository;
     private final ProjectRepository projectRepository;
+    private final EducationRepository educationRepository;
+    private final SkillRepository skillRepository;
+    private final ProfileSkillRepository profileSkillRepository;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -89,13 +94,22 @@ public class SuggestionServiceImpl implements SuggestionService {
                 : suggestion.getSuggestedText();
 
         if ("PROJECT_BULLETS".equalsIgnoreCase(targetSection) || "PROJECT".equalsIgnoreCase(targetSection)) {
-            applyProjectBullets(profile, suggestion, textToApply);
+            if (suggestion.getTargetId() == null) {
+                applyNewProject(profile, suggestion, textToApply);
+            } else {
+                applyProjectBullets(profile, suggestion, textToApply);
+            }
+        } else if ("SKILL".equalsIgnoreCase(targetSection)) {
+            applySkill(profile, suggestion, textToApply);
+        } else if ("EDUCATION".equalsIgnoreCase(targetSection)) {
+            applyEducation(profile, suggestion, textToApply);
         } else if ("HEADLINE".equalsIgnoreCase(targetSection)) {
             applyHeadline(profile, suggestion, textToApply);
         } else if ("ABOUT".equalsIgnoreCase(targetSection)) {
             applyAbout(profile, suggestion, textToApply);
         } else {
             log.warn("Unrecognized target section for suggestion {}: {}", id, targetSection);
+            throw new IllegalArgumentException("Unsupported target section: " + targetSection);
         }
 
         // 3. Mark suggestion APPROVED
@@ -173,6 +187,71 @@ public class SuggestionServiceImpl implements SuggestionService {
                 .build();
     }
 
+    private void applyNewProject(Profile profile, AgentSuggestion suggestion, String textToApply) {
+        if (textToApply == null || textToApply.isBlank()) {
+            throw new IllegalArgumentException("Project content cannot be blank");
+        }
+
+        ParsedProjectDto projectDto;
+        try {
+            projectDto = objectMapper.readValue(textToApply.trim(), ParsedProjectDto.class);
+        } catch (Exception e) {
+            log.warn("Failed to parse project suggestion JSON: {}", e.getMessage());
+            throw new IllegalArgumentException("Malformed project suggestion JSON payload");
+        }
+
+        if (projectDto == null) {
+            throw new IllegalArgumentException("Malformed project suggestion JSON payload");
+        }
+
+        String title = SanitizationUtil.sanitize(projectDto.getTitle());
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("Project title is required");
+        }
+        if (title.length() > 255) {
+            title = title.substring(0, 255);
+        }
+
+        String description = SanitizationUtil.sanitize(projectDto.getDescription());
+        String role = SanitizationUtil.sanitize(projectDto.getRole());
+        if (role != null && role.length() > 100) {
+            role = role.substring(0, 100);
+        }
+
+        String technologies = SanitizationUtil.sanitize(projectDto.getTechnologies());
+        if (technologies != null && technologies.length() > 255) {
+            technologies = technologies.substring(0, 255);
+        }
+
+        List<String> rawBullets = projectDto.getBullets() != null ? projectDto.getBullets() : Collections.emptyList();
+        List<String> cleanBullets = rawBullets.stream()
+                .map(SanitizationUtil::sanitize)
+                .filter(b -> b != null && !b.isBlank())
+                .toList();
+
+        if (cleanBullets.size() > 8) {
+            throw new IllegalArgumentException("Maximum of 8 project bullets allowed");
+        }
+        for (String bullet : cleanBullets) {
+            if (bullet.length() > 300) {
+                throw new IllegalArgumentException("Project bullet must not exceed 300 characters: " + bullet);
+            }
+        }
+
+        Project newProject = Project.builder()
+                .profile(profile)
+                .title(title)
+                .description(description)
+                .role(role)
+                .technologies(technologies)
+                .bullets(new ArrayList<>(cleanBullets))
+                .isAcademic(true)
+                .build();
+
+        projectRepository.save(newProject);
+        log.info("Created new project '{}' (profile ID: {}) from suggestion ID: {}", title, profile.getId(), suggestion.getId());
+    }
+
     private void applyProjectBullets(Profile profile, AgentSuggestion suggestion, String textToApply) {
         if (suggestion.getTargetId() == null) {
             throw new IllegalArgumentException("Cannot apply project bullets suggestion without a target project ID");
@@ -207,38 +286,173 @@ public class SuggestionServiceImpl implements SuggestionService {
         projectRepository.save(project);
     }
 
-    private void applyHeadline(Profile profile, AgentSuggestion suggestion, String textToApply) {
-        String currentHeadline = profile.getHeadline() != null ? profile.getHeadline().trim() : "";
-        String currentHash = computeHash(currentHeadline);
-
-        if (suggestion.getOriginalTextHash() != null && !suggestion.getOriginalTextHash().equals(currentHash)) {
-            throw new ConflictException("Target headline has been modified since this suggestion was created. Suggestion is stale.");
+    private void applySkill(Profile profile, AgentSuggestion suggestion, String textToApply) {
+        if (textToApply == null || textToApply.isBlank()) {
+            throw new IllegalArgumentException("Skill content cannot be blank");
         }
 
-        if (textToApply.isBlank()) {
+        String skillName;
+        String proficiency;
+
+        String trimmed = textToApply.trim();
+        if (trimmed.startsWith("{")) {
+            try {
+                ParsedSkillDto skillDto = objectMapper.readValue(trimmed, ParsedSkillDto.class);
+                if (skillDto == null) {
+                    throw new IllegalArgumentException("Malformed skill suggestion JSON payload");
+                }
+                skillName = skillDto.getName();
+                proficiency = skillDto.getProficiency();
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                log.warn("Failed to parse skill suggestion JSON: {}", e.getMessage());
+                throw new IllegalArgumentException("Malformed skill suggestion JSON payload");
+            }
+        } else {
+            int openParen = trimmed.indexOf('(');
+            int closeParen = trimmed.lastIndexOf(')');
+            if (openParen > 0 && closeParen > openParen) {
+                skillName = trimmed.substring(0, openParen).trim();
+                proficiency = trimmed.substring(openParen + 1, closeParen).trim();
+            } else {
+                skillName = trimmed;
+                proficiency = "INTERMEDIATE";
+            }
+        }
+
+        skillName = SanitizationUtil.sanitize(skillName);
+        if (skillName == null || skillName.isBlank()) {
+            throw new IllegalArgumentException("Skill name is required");
+        }
+        if (skillName.length() > 100) {
+            skillName = skillName.substring(0, 100);
+        }
+
+        if (proficiency == null || proficiency.isBlank()) {
+            proficiency = "INTERMEDIATE";
+        } else {
+            proficiency = proficiency.toUpperCase().trim();
+        }
+
+        // Skip if duplicate (Requirement 1: skill suggestion -> create/link the skill (skip if duplicate))
+        if (profileSkillRepository.existsByProfileIdAndSkillNameIgnoreCase(profile.getId(), skillName)) {
+            log.info("Skill '{}' already exists on profile ID: {}. Skipping duplicate.", skillName, profile.getId());
+            return;
+        }
+
+        final String finalSkillName = skillName;
+        Skill skill = skillRepository.findByNameIgnoreCase(finalSkillName)
+                .orElseGet(() -> skillRepository.save(Skill.builder()
+                        .name(finalSkillName)
+                        .category("TECHNICAL")
+                        .build()));
+
+        ProfileSkill profileSkill = ProfileSkill.builder()
+                .profile(profile)
+                .skill(skill)
+                .claimedLevel(proficiency)
+                .verificationStatus(VerificationStatus.UNVERIFIED)
+                .build();
+
+        profileSkillRepository.save(profileSkill);
+        log.info("Linked skill '{}' ({}) to profile ID: {} from suggestion ID: {}", skillName, proficiency, profile.getId(), suggestion.getId());
+    }
+
+    private void applyEducation(Profile profile, AgentSuggestion suggestion, String textToApply) {
+        if (textToApply == null || textToApply.isBlank()) {
+            throw new IllegalArgumentException("Education content cannot be blank");
+        }
+
+        ParsedEducationDto eduDto;
+        try {
+            eduDto = objectMapper.readValue(textToApply.trim(), ParsedEducationDto.class);
+        } catch (Exception e) {
+            log.warn("Failed to parse education suggestion JSON: {}", e.getMessage());
+            throw new IllegalArgumentException("Malformed education suggestion JSON payload");
+        }
+
+        if (eduDto == null) {
+            throw new IllegalArgumentException("Malformed education suggestion JSON payload");
+        }
+
+        String institution = SanitizationUtil.sanitize(eduDto.getInstitution());
+        if (institution == null || institution.isBlank()) {
+            throw new IllegalArgumentException("Institution is required");
+        }
+        if (institution.length() > 255) {
+            institution = institution.substring(0, 255);
+        }
+
+        String degree = SanitizationUtil.sanitize(eduDto.getDegree());
+        if (degree == null || degree.isBlank()) {
+            throw new IllegalArgumentException("Degree is required");
+        }
+        if (degree.length() > 255) {
+            degree = degree.substring(0, 255);
+        }
+
+        String fieldOfStudy = SanitizationUtil.sanitize(eduDto.getFieldOfStudy());
+        if (fieldOfStudy != null && fieldOfStudy.length() > 255) {
+            fieldOfStudy = fieldOfStudy.substring(0, 255);
+        }
+
+        String gradeOrGpa = SanitizationUtil.sanitize(eduDto.getGradeOrGpa());
+        if (gradeOrGpa != null && gradeOrGpa.length() > 50) {
+            gradeOrGpa = gradeOrGpa.substring(0, 50);
+        }
+
+        Education education = Education.builder()
+                .profile(profile)
+                .institution(institution)
+                .degree(degree)
+                .fieldOfStudy(fieldOfStudy)
+                .gradeOrGpa(gradeOrGpa)
+                .build();
+
+        educationRepository.save(education);
+        log.info("Created education record '{}' at '{}' for profile ID: {} from suggestion ID: {}",
+                degree, institution, profile.getId(), suggestion.getId());
+    }
+
+    private void applyHeadline(Profile profile, AgentSuggestion suggestion, String textToApply) {
+        if (suggestion.getTargetId() != null || (suggestion.getOriginalText() != null && !suggestion.getOriginalText().isBlank())) {
+            String currentHeadline = profile.getHeadline() != null ? profile.getHeadline().trim() : "";
+            String currentHash = computeHash(currentHeadline);
+
+            if (suggestion.getOriginalTextHash() != null && !suggestion.getOriginalTextHash().isBlank() && !suggestion.getOriginalTextHash().equals(currentHash)) {
+                throw new ConflictException("Target headline has been modified since this suggestion was created. Suggestion is stale.");
+            }
+        }
+
+        String headline = SanitizationUtil.sanitize(textToApply);
+        if (headline == null || headline.isBlank()) {
             throw new IllegalArgumentException("Headline cannot be blank");
         }
-        if (textToApply.length() > 120) {
+        if (headline.length() > 120) {
             throw new IllegalArgumentException("Headline must not exceed 120 characters");
         }
 
-        profile.setHeadline(textToApply);
+        profile.setHeadline(headline);
         profileRepository.save(profile);
     }
 
     private void applyAbout(Profile profile, AgentSuggestion suggestion, String textToApply) {
-        String currentAbout = profile.getAbout() != null ? profile.getAbout().trim() : "";
-        String currentHash = computeHash(currentAbout);
+        if (suggestion.getTargetId() != null || (suggestion.getOriginalText() != null && !suggestion.getOriginalText().isBlank())) {
+            String currentAbout = profile.getAbout() != null ? profile.getAbout().trim() : "";
+            String currentHash = computeHash(currentAbout);
 
-        if (suggestion.getOriginalTextHash() != null && !suggestion.getOriginalTextHash().equals(currentHash)) {
-            throw new ConflictException("Target about section has been modified since this suggestion was created. Suggestion is stale.");
+            if (suggestion.getOriginalTextHash() != null && !suggestion.getOriginalTextHash().isBlank() && !suggestion.getOriginalTextHash().equals(currentHash)) {
+                throw new ConflictException("Target about section has been modified since this suggestion was created. Suggestion is stale.");
+            }
         }
 
-        if (textToApply.length() > 2000) {
+        String about = SanitizationUtil.sanitize(textToApply);
+        if (about != null && about.length() > 2000) {
             throw new IllegalArgumentException("About section must not exceed 2000 characters");
         }
 
-        profile.setAbout(textToApply);
+        profile.setAbout(about);
         profileRepository.save(profile);
     }
 
@@ -289,6 +503,23 @@ public class SuggestionServiceImpl implements SuggestionService {
         if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
             try {
                 return objectMapper.readValue(trimmed, new TypeReference<List<String>>() {});
+            } catch (Exception ignored) {
+                // fallback to line splitting
+            }
+        }
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+                com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(trimmed);
+                if (node.has("bullets") && node.get("bullets").isArray()) {
+                    List<String> list = new ArrayList<>();
+                    node.get("bullets").forEach(b -> {
+                        String txt = b.asText().trim();
+                        if (!txt.isBlank()) {
+                            list.add(txt);
+                        }
+                    });
+                    return list;
+                }
             } catch (Exception ignored) {
                 // fallback to line splitting
             }

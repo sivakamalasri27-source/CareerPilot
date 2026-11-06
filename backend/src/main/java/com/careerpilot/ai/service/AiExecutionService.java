@@ -188,6 +188,9 @@ public class AiExecutionService {
                 // 4xx client errors are permanent configuration/request issues; NEVER retry!
                 log.error("LLM client error (4xx): status={}, message={}", ex.getStatusCode(), ex.getMessage());
                 throw ex;
+            } catch (com.careerpilot.ai.client.GeminiApiException ex) {
+                log.error("Gemini API client error (status={}): {}", ex.getStatusCode(), ex.getMessage());
+                throw ex;
             } catch (ResourceAccessException | HttpServerErrorException ex) {
                 // Transient network / timeout / 5xx error
                 log.warn("Transient error calling LLM on attempt {}/{}: {}", attempt, maxAttempts, ex.getMessage());
@@ -271,11 +274,37 @@ public class AiExecutionService {
         return trimmed.trim();
     }
 
+    public static String computeProfileContentHash(String profileContent) {
+        if (profileContent == null || profileContent.isBlank()) {
+            return "";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(profileContent.trim().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    public static String computeAuditCacheKey(String promptVersion, String profileContentHash) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            String raw = (promptVersion != null ? promptVersion : "v2") + ":" + (profileContentHash != null ? profileContentHash : "");
+            byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
     public static String computeCacheKey(String promptVersion, String model, String prompt, String input) {
+        String profileContentHash = computeProfileContentHash(input);
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             String raw = (promptVersion != null ? promptVersion : "") + "|"
                     + (model != null ? model : "") + "|"
+                    + profileContentHash + "|"
                     + (prompt != null ? prompt : "") + "|"
                     + (input != null ? input : "");
             byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));

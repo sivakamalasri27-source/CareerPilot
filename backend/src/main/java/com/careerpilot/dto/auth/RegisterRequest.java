@@ -1,5 +1,6 @@
 package com.careerpilot.dto.auth;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -22,12 +23,10 @@ public class RegisterRequest {
 
     @NotBlank(message = "Full name is required")
     @Size(min = 2, max = 100, message = "Full name must be between 2 and 100 characters")
+    @JsonAlias({"name", "full_name"})
     private String fullName;
 
     @NotBlank(message = "Password is required")
-    @Pattern(
-            regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&#^()_+\\-=\\[\\]{};':\"\\\\|,.<>\\/?]).{8,}$",
-            message = "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character"
-    )
+    @Size(min = 6, max = 100, message = "Password must be at least 6 characters long")
     private String password;
 }

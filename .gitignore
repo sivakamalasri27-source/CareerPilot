@@ -1,36 +1,60 @@
-# Compiled files & build artifacts
+# Build and Compilation Artifacts
 target/
+**/target/
 *.class
 *.jar
 *.war
 *.ear
+coverage/
+**/coverage/
 
-# Environment & local configurations
+# Frontend Artifacts
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+*.tsbuildinfo
+.npm/
+
+# Environment Variables & Secrets
 .env
-.env.local
+.env.*
+!.env.example
+!.env.*.example
 *.local
 
-# IDE & Editor files
+# IDE, Editor & Tooling Files
 .idea/
 *.iml
 .vscode/
 *.swp
 *.swo
 *~
+.settings/
+.project
+.classpath
+
+# OS Specific
 .DS_Store
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
 # Logs
 *.log
 logs/
+**/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Frontend (for Phase 9)
+# Local run files
+target/
 node_modules/
-dist/
-dist-ssr/
-*.tsbuildinfo
-.npm/
-
-# OS specific
-Desktop.ini
-$RECYCLE.BIN/
+run.log
+start.ps1
+backend/data/
+*.mv.db
+*.trace.db

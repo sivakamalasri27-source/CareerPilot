@@ -15,7 +15,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @RestControllerAdvice
@@ -24,16 +26,20 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidationExceptions(
             MethodArgumentNotValidException ex, HttpServletRequest request) {
-        Map<String, String> errors = new HashMap<>();
+        Map<String, String> errors = new LinkedHashMap<>();
         for (FieldError fieldError : ex.getBindingResult().getFieldErrors()) {
             errors.put(fieldError.getField(), fieldError.getDefaultMessage());
         }
+
+        String formattedMessage = errors.entrySet().stream()
+                .map(e -> e.getKey() + ": " + e.getValue())
+                .collect(Collectors.joining("; "));
 
         ErrorResponse errorResponse = ErrorResponse.builder()
                 .timestamp(Instant.now())
                 .status(HttpStatus.BAD_REQUEST.value())
                 .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
-                .message("Validation failed for input data")
+                .message(!formattedMessage.isBlank() ? formattedMessage : "Validation failed for input data")
                 .path(request.getRequestURI())
                 .validationErrors(errors)
                 .build();
@@ -163,6 +169,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header(org.springframework.http.HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
                 .body(errorResponse);
+    }
+
+    @ExceptionHandler(AiServiceUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleAiServiceUnavailableException(
+            AiServiceUnavailableException ex, HttpServletRequest request) {
+        log.warn("AI service unavailable: {}", ex.getMessage());
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(Instant.now())
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error(HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
     }
 
     @ExceptionHandler(io.github.resilience4j.circuitbreaker.CallNotPermittedException.class)

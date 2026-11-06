@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.3.5</version>
-        <relativePath/>
+        <relativePath />
     </parent>
 
     <groupId>com.careerpilot</groupId>
@@ -18,19 +18,27 @@
     <description>CareerPilot - Multi-Agent AI Profile Coach for Freshers</description>
 
     <properties>
-        <java.version>17</java.version>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
-        <maven.compiler.release>17</maven.compiler.release>
+        <!-- ===== Java 21 is the required JDK (17-21 enforced below) ===== -->
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <jjwt.version>0.12.6</jjwt.version>
         <springdoc.version>2.6.0</springdoc.version>
-        <mapstruct.version>1.5.5.Final</mapstruct.version>
+        <!-- MapStruct 1.6.x is the first release with full Java 21 support -->
+        <mapstruct.version>1.6.3</mapstruct.version>
+        <!-- lombok-mapstruct-binding 0.2.0 supports Lombok 1.18.x + MapStruct 1.6.x -->
         <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
+        <!-- Lombok 1.18.36 fully supports Java 21 annotation processing -->
+        <lombok.version>1.18.36</lombok.version>
         <bucket4j.version>8.10.1</bucket4j.version>
         <resilience4j.version>2.2.0</resilience4j.version>
         <pdfbox.version>3.0.3</pdfbox.version>
+        <testcontainers.version>1.20.4</testcontainers.version>
+        <jacoco.version>0.8.12</jacoco.version>
+        <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
     </properties>
 
     <dependencies>
@@ -128,10 +136,11 @@
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
-        <!-- Lombok Boilerplate Reduction -->
+        <!-- Lombok Boilerplate Reduction — version pinned to 1.18.36 for Java 21 -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
             <optional>true</optional>
         </dependency>
 
@@ -152,11 +161,31 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>test</scope>
+            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers for PostgreSQL Integration Testing -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -164,12 +193,31 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
-                    <source>17</source>
-                    <target>17</target>
-                    <release>17</release>
+                    <source>21</source>
+                    <target>21</target>
+                    <release>21</release>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
@@ -200,6 +248,39 @@
                         </exclude>
                     </excludes>
                 </configuration>
+            </plugin>
+
+            <!-- ===== Enforcer: require JDK 17–21, reject Java 22+ ===== -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${maven-enforcer-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>enforce-java-21</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[17,)</version>
+                                    <message>
+                                        ======================================================
+                                        CareerPilot requires JDK 17–21 to build correctly.
+                                        Lombok and MapStruct annotation processors crash on
+                                        Java 22+ (TypeTag::UNKNOWN / ProfileMapper missing).
+                                        You are running: ${java.version}
+                                        Fix: set JAVA_HOME to your JDK 21 installation.
+                                        Windows: $env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
+                                        ======================================================
+                                    </message>
+                                </requireJavaVersion>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
